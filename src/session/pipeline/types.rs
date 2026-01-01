@@ -91,3 +91,345 @@ impl StreamState {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_pipeline_table_clone() {
+        let table = PipelineTable {
+            name: "test".to_string(),
+            sql: Some("SELECT 1".to_string()),
+            schema: None,
+            rows: vec![json!(1)],
+            dependencies: vec!["dep".to_string()],
+            is_source: false,
+        };
+        let cloned = table.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.sql, Some("SELECT 1".to_string()));
+    }
+
+    #[test]
+    fn test_pipeline_table_debug() {
+        let table = PipelineTable {
+            name: "t".to_string(),
+            sql: None,
+            schema: Some(vec![]),
+            rows: vec![],
+            dependencies: vec![],
+            is_source: true,
+        };
+        let debug = format!("{:?}", table);
+        assert!(debug.contains("PipelineTable"));
+    }
+
+    #[test]
+    fn test_pipeline_result_default() {
+        let result: PipelineResult = Default::default();
+        assert!(result.succeeded.is_empty());
+        assert!(result.failed.is_empty());
+        assert!(result.skipped.is_empty());
+    }
+
+    #[test]
+    fn test_pipeline_result_all_succeeded_true() {
+        let result = PipelineResult {
+            succeeded: vec!["a".to_string(), "b".to_string()],
+            failed: vec![],
+            skipped: vec![],
+        };
+        assert!(result.all_succeeded());
+    }
+
+    #[test]
+    fn test_pipeline_result_all_succeeded_false_with_failed() {
+        let result = PipelineResult {
+            succeeded: vec!["a".to_string()],
+            failed: vec![TableError { table: "b".to_string(), error: "err".to_string() }],
+            skipped: vec![],
+        };
+        assert!(!result.all_succeeded());
+    }
+
+    #[test]
+    fn test_pipeline_result_all_succeeded_false_with_skipped() {
+        let result = PipelineResult {
+            succeeded: vec!["a".to_string()],
+            failed: vec![],
+            skipped: vec!["c".to_string()],
+        };
+        assert!(!result.all_succeeded());
+    }
+
+    #[test]
+    fn test_pipeline_result_clone() {
+        let result = PipelineResult {
+            succeeded: vec!["x".to_string()],
+            failed: vec![TableError { table: "y".to_string(), error: "e".to_string() }],
+            skipped: vec!["z".to_string()],
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.succeeded, vec!["x".to_string()]);
+        assert_eq!(cloned.failed.len(), 1);
+        assert_eq!(cloned.skipped, vec!["z".to_string()]);
+    }
+
+    #[test]
+    fn test_pipeline_result_eq() {
+        let r1 = PipelineResult {
+            succeeded: vec!["a".to_string()],
+            failed: vec![],
+            skipped: vec![],
+        };
+        let r2 = PipelineResult {
+            succeeded: vec!["a".to_string()],
+            failed: vec![],
+            skipped: vec![],
+        };
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_pipeline_result_debug() {
+        let result = PipelineResult::default();
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("PipelineResult"));
+    }
+
+    #[test]
+    fn test_table_error_clone() {
+        let err = TableError {
+            table: "t".to_string(),
+            error: "failed".to_string(),
+        };
+        let cloned = err.clone();
+        assert_eq!(cloned.table, "t");
+        assert_eq!(cloned.error, "failed");
+    }
+
+    #[test]
+    fn test_table_error_eq() {
+        let e1 = TableError { table: "t".to_string(), error: "e".to_string() };
+        let e2 = TableError { table: "t".to_string(), error: "e".to_string() };
+        assert_eq!(e1, e2);
+    }
+
+    #[test]
+    fn test_table_error_debug() {
+        let err = TableError { table: "t".to_string(), error: "e".to_string() };
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("TableError"));
+    }
+
+    #[test]
+    fn test_stream_state_is_pending() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(state.is_pending("a"));
+        assert!(state.is_pending("nonexistent"));
+    }
+
+    #[test]
+    fn test_stream_state_is_pending_false_when_completed() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::from(["a".to_string()]),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(!state.is_pending("a"));
+    }
+
+    #[test]
+    fn test_stream_state_is_pending_false_when_blocked() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::from(["a".to_string()]),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(!state.is_pending("a"));
+    }
+
+    #[test]
+    fn test_stream_state_is_pending_false_when_in_flight() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::from(["a".to_string()]),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(!state.is_pending("a"));
+    }
+
+    #[test]
+    fn test_stream_state_is_ready_true() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(state.is_ready("a"));
+    }
+
+    #[test]
+    fn test_stream_state_is_ready_false_has_deps() {
+        let state = StreamState {
+            pending_deps: HashMap::from([
+                ("a".to_string(), HashSet::from(["b".to_string()]))
+            ]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(!state.is_ready("a"));
+    }
+
+    #[test]
+    fn test_stream_state_is_ready_false_not_in_pending() {
+        let state = StreamState {
+            pending_deps: HashMap::new(),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+        assert!(!state.is_ready("a"));
+    }
+
+    #[test]
+    fn test_stream_state_mark_completed() {
+        let mut state = StreamState {
+            pending_deps: HashMap::from([
+                ("a".to_string(), HashSet::new()),
+                ("b".to_string(), HashSet::from(["a".to_string()])),
+            ]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+
+        state.mark_completed("a");
+
+        assert!(state.completed.contains("a"));
+        assert!(state.pending_deps.get("b").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_stream_state_mark_blocked() {
+        let mut state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+
+        state.mark_blocked("a");
+
+        assert!(state.blocked.contains("a"));
+        assert!(!state.is_pending("a"));
+    }
+
+    #[test]
+    fn test_stream_state_mark_in_flight() {
+        let mut state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+
+        state.mark_in_flight("a");
+
+        assert!(state.in_flight.contains("a"));
+        assert!(!state.is_pending("a"));
+    }
+
+    #[test]
+    fn test_stream_state_finish_in_flight() {
+        let mut state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::from(["a".to_string()]),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+
+        state.finish_in_flight("a");
+
+        assert!(!state.in_flight.contains("a"));
+    }
+
+    #[test]
+    fn test_stream_state_ready_tables_empty_when_at_capacity() {
+        let state = StreamState {
+            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::from(["b".to_string(), "c".to_string()]),
+            max_concurrency: 2,
+        };
+
+        let ready = state.ready_tables();
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn test_stream_state_ready_tables_returns_ready() {
+        let state = StreamState {
+            pending_deps: HashMap::from([
+                ("a".to_string(), HashSet::new()),
+                ("b".to_string(), HashSet::new()),
+                ("c".to_string(), HashSet::from(["a".to_string()])),
+            ]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: DEFAULT_MAX_CONCURRENCY,
+        };
+
+        let ready = state.ready_tables();
+        assert!(ready.contains(&"a".to_string()) || ready.contains(&"b".to_string()));
+        assert!(!ready.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_stream_state_ready_tables_respects_concurrency() {
+        let state = StreamState {
+            pending_deps: HashMap::from([
+                ("a".to_string(), HashSet::new()),
+                ("b".to_string(), HashSet::new()),
+                ("c".to_string(), HashSet::new()),
+            ]),
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: 2,
+        };
+
+        let ready = state.ready_tables();
+        assert!(ready.len() <= 2);
+    }
+
+    #[test]
+    fn test_default_max_concurrency() {
+        assert_eq!(DEFAULT_MAX_CONCURRENCY, 8);
+    }
+}

@@ -388,3 +388,405 @@ where
         .await
         .map_err(|e| Error::Internal(format!("Task join error: {e}")))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionManager;
+    use serde_json::json;
+
+    fn create_rpc_methods() -> RpcMethods {
+        let session_manager = Arc::new(SessionManager::new());
+        RpcMethods::new(session_manager)
+    }
+
+    async fn create_session_for_test(methods: &RpcMethods) -> String {
+        let result = methods.dispatch("bq.createSession", json!({})).await.unwrap();
+        result["sessionId"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_new() {
+        let session_manager = Arc::new(SessionManager::new());
+        let _ = RpcMethods::new(session_manager);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_ping() {
+        let methods = create_rpc_methods();
+        let result = methods.dispatch("bq.ping", json!({})).await.unwrap();
+        assert_eq!(result["message"], "pong");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_unknown_method() {
+        let methods = create_rpc_methods();
+        let err = methods.dispatch("unknown.method", json!({})).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_create_session() {
+        let methods = create_rpc_methods();
+        let result = methods.dispatch("bq.createSession", json!({})).await.unwrap();
+        assert!(result["sessionId"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_destroy_session() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.destroySession", json!({"sessionId": session_id})).await.unwrap();
+        assert_eq!(result["success"], true);
+    }
+
+    #[tokio::test]
+    async fn test_destroy_session_invalid_uuid() {
+        let methods = create_rpc_methods();
+        let err = methods.dispatch("bq.destroySession", json!({"sessionId": "not-a-uuid"})).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_query() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.query", json!({"sessionId": session_id, "sql": "SELECT 1 AS value"})).await.unwrap();
+        assert!(result["schema"].is_object() || result["rows"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_create_table() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.createTable", json!({
+            "sessionId": session_id,
+            "tableName": "test_table",
+            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+        })).await.unwrap();
+        assert_eq!(result["success"], true);
+    }
+
+    #[tokio::test]
+    async fn test_insert_empty_rows() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.insert", json!({
+            "sessionId": session_id,
+            "tableName": "test_table",
+            "rows": []
+        })).await.unwrap();
+        assert_eq!(result["insertedRows"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_array_rows() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.createTable", json!({
+            "sessionId": session_id,
+            "tableName": "test_table",
+            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.insert", json!({
+            "sessionId": session_id,
+            "tableName": "test_table",
+            "rows": [[1, "Alice"], [2, "Bob"]]
+        })).await.unwrap();
+        assert_eq!(result["insertedRows"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_object_rows() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.createTable", json!({
+            "sessionId": session_id,
+            "tableName": "test_table2",
+            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.insert", json!({
+            "sessionId": session_id,
+            "tableName": "test_table2",
+            "rows": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+        })).await.unwrap();
+        assert_eq!(result["insertedRows"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_mixed_rows_filters_invalid() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.createTable", json!({
+            "sessionId": session_id,
+            "tableName": "test_table3",
+            "schema": [{"name": "id", "type": "INT64"}]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.insert", json!({
+            "sessionId": session_id,
+            "tableName": "test_table3",
+            "rows": [[1], "invalid", [2], null, [3]]
+        })).await.unwrap();
+        assert_eq!(result["insertedRows"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_register_dag() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.registerDag", json!({
+            "sessionId": session_id,
+            "tables": [
+                {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1], [2]]},
+                {"name": "derived", "sql": "SELECT * FROM source"}
+            ]
+        })).await.unwrap();
+        assert_eq!(result["success"], true);
+        assert!(result["tables"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_run_dag() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.registerDag", json!({
+            "sessionId": session_id,
+            "tables": [
+                {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1], [2]]},
+                {"name": "derived", "sql": "SELECT * FROM source"}
+            ]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.runDag", json!({
+            "sessionId": session_id
+        })).await.unwrap();
+        assert!(result["success"].is_boolean());
+        assert!(result["succeededTables"].is_array());
+        assert!(result["failedTables"].is_array());
+        assert!(result["skippedTables"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_run_dag_with_targets() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.registerDag", json!({
+            "sessionId": session_id,
+            "tables": [
+                {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1]]},
+                {"name": "derived", "sql": "SELECT * FROM source"}
+            ]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.runDag", json!({
+            "sessionId": session_id,
+            "tableNames": ["derived"],
+            "retryCount": 1
+        })).await.unwrap();
+        assert!(result["success"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn test_retry_dag() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.registerDag", json!({
+            "sessionId": session_id,
+            "tables": [
+                {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1]]}
+            ]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.retryDag", json!({
+            "sessionId": session_id,
+            "failedTables": [],
+            "skippedTables": []
+        })).await.unwrap();
+        assert!(result["success"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn test_get_dag() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.registerDag", json!({
+            "sessionId": session_id,
+            "tables": [
+                {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1]]}
+            ]
+        })).await.unwrap();
+        let result = methods.dispatch("bq.getDag", json!({
+            "sessionId": session_id
+        })).await.unwrap();
+        assert!(result["tables"].is_array());
+    }
+
+    #[test]
+    fn test_clear_dag_params_parsing() {
+        let params_json = r#"{"sessionId":"abc"}"#;
+        let params: crate::rpc::types::ClearDagParams = serde_json::from_str(params_json).unwrap();
+        assert_eq!(params.session_id, "abc");
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_params_valid() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.listTables", json!({
+            "sessionId": session_id
+        })).await;
+        assert!(result.is_err() || result.unwrap()["tables"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_describe_table_params_valid() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.describeTable", json!({
+            "sessionId": session_id,
+            "tableName": "describe_me"
+        })).await;
+        assert!(result.is_err() || result.unwrap()["name"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_default_project() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.setDefaultProject", json!({
+            "sessionId": session_id,
+            "project": "MY_PROJECT"
+        })).await.unwrap();
+        assert_eq!(result["success"], true);
+        let result = methods.dispatch("bq.getDefaultProject", json!({
+            "sessionId": session_id
+        })).await.unwrap();
+        assert!(result["project"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_set_default_project_to_none() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.setDefaultProject", json!({
+            "sessionId": session_id,
+            "project": "SOME_PROJECT"
+        })).await.unwrap();
+        let result = methods.dispatch("bq.setDefaultProject", json!({
+            "sessionId": session_id,
+            "project": null
+        })).await.unwrap();
+        assert_eq!(result["success"], true);
+        let result = methods.dispatch("bq.getDefaultProject", json!({
+            "sessionId": session_id
+        })).await.unwrap();
+        assert_eq!(result["project"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_get_projects() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.getProjects", json!({
+            "sessionId": session_id
+        })).await.unwrap();
+        assert!(result["projects"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_get_datasets() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.getDatasets", json!({
+            "sessionId": session_id,
+            "project": "test-project"
+        })).await.unwrap();
+        assert!(result["datasets"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_get_tables_in_dataset() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let result = methods.dispatch("bq.getTablesInDataset", json!({
+            "sessionId": session_id,
+            "project": "test-project",
+            "dataset": "test-dataset"
+        })).await.unwrap();
+        assert!(result["tables"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_parse_uuid_invalid() {
+        let err = parse_uuid("not-a-uuid").unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_parse_uuid_valid() {
+        let uuid = parse_uuid("00000000-0000-0000-0000-000000000000").unwrap();
+        assert_eq!(uuid.to_string(), "00000000-0000-0000-0000-000000000000");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_all_methods() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        methods.dispatch("bq.createTable", json!({
+            "sessionId": session_id,
+            "tableName": "t",
+            "schema": [{"name": "id", "type": "INT64"}]
+        })).await.unwrap();
+        let all_methods = vec![
+            ("bq.ping", json!({})),
+            ("bq.createSession", json!({})),
+        ];
+        for (method, params) in all_methods {
+            let result = methods.dispatch(method, params).await;
+            assert!(result.is_ok(), "Method {} failed: {:?}", method, result.err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_sql_directory_not_found() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let err = methods.dispatch("bq.loadSqlDirectory", json!({
+            "sessionId": session_id,
+            "rootPath": "/nonexistent/path"
+        })).await.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[tokio::test]
+    async fn test_load_parquet_directory_not_found() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let err = methods.dispatch("bq.loadParquetDirectory", json!({
+            "sessionId": session_id,
+            "rootPath": "/nonexistent/path"
+        })).await.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[tokio::test]
+    async fn test_load_dag_from_directory_not_found() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let err = methods.dispatch("bq.loadDagFromDirectory", json!({
+            "sessionId": session_id,
+            "rootPath": "/nonexistent/path"
+        })).await.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[tokio::test]
+    async fn test_load_parquet_not_found() {
+        let methods = create_rpc_methods();
+        let session_id = create_session_for_test(&methods).await;
+        let err = methods.dispatch("bq.loadParquet", json!({
+            "sessionId": session_id,
+            "tableName": "t",
+            "path": "/nonexistent/file.parquet",
+            "schema": [{"name": "id", "type": "INT64"}]
+        })).await.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+}

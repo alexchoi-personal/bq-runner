@@ -140,3 +140,304 @@ impl ParquetFile {
         format!("{}.{}.{}", self.project, self.dataset, self.table)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_test_structure(temp_dir: &TempDir) -> std::path::PathBuf {
+        let root = temp_dir.path();
+        let project_path = root.join("my_project");
+        let dataset_path = project_path.join("my_dataset");
+        fs::create_dir_all(&dataset_path).unwrap();
+        dataset_path
+    }
+
+    #[test]
+    fn test_discover_files_not_a_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("not_a_dir.txt");
+        fs::write(&file_path, "content").unwrap();
+        let err = discover_files(file_path.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[test]
+    fn test_discover_files_nonexistent() {
+        let err = discover_files("/nonexistent/path").unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[test]
+    fn test_discover_files_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert!(result.sql_files.is_empty());
+        assert!(result.parquet_files.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sql_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        let sql_path = dataset_path.join("my_table.sql");
+        fs::write(&sql_path, "SELECT 1").unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 1);
+        assert_eq!(result.sql_files[0].project, "my_project");
+        assert_eq!(result.sql_files[0].dataset, "my_dataset");
+        assert_eq!(result.sql_files[0].table, "my_table");
+        assert_eq!(result.sql_files[0].sql, "SELECT 1");
+    }
+
+    #[test]
+    fn test_discover_parquet_files_with_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        let parquet_path = dataset_path.join("my_table.parquet");
+        fs::write(&parquet_path, "dummy parquet data").unwrap();
+        let schema_path = dataset_path.join("my_table.schema.json");
+        fs::write(&schema_path, r#"[{"name": "id", "type": "INT64"}]"#).unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.parquet_files.len(), 1);
+        assert_eq!(result.parquet_files[0].project, "my_project");
+        assert_eq!(result.parquet_files[0].dataset, "my_dataset");
+        assert_eq!(result.parquet_files[0].table, "my_table");
+        assert_eq!(result.parquet_files[0].schema.len(), 1);
+        assert_eq!(result.parquet_files[0].schema[0].name, "id");
+    }
+
+    #[test]
+    fn test_discover_parquet_files_missing_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        let parquet_path = dataset_path.join("no_schema.parquet");
+        fs::write(&parquet_path, "dummy parquet data").unwrap();
+        let err = discover_files(temp_dir.path().to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[test]
+    fn test_discover_parquet_files_invalid_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        let parquet_path = dataset_path.join("bad_schema.parquet");
+        fs::write(&parquet_path, "dummy parquet data").unwrap();
+        let schema_path = dataset_path.join("bad_schema.schema.json");
+        fs::write(&schema_path, "not valid json").unwrap();
+        let err = discover_files(temp_dir.path().to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+    }
+
+    #[test]
+    fn test_discover_files_skips_non_directories_at_project_level() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("file.txt"), "content").unwrap();
+        let project_path = root.join("project");
+        let dataset_path = project_path.join("dataset");
+        fs::create_dir_all(&dataset_path).unwrap();
+        fs::write(dataset_path.join("table.sql"), "SELECT 1").unwrap();
+        let result = discover_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_files_skips_non_directories_at_dataset_level() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let project_path = root.join("project");
+        fs::create_dir_all(&project_path).unwrap();
+        fs::write(project_path.join("file.txt"), "content").unwrap();
+        let dataset_path = project_path.join("dataset");
+        fs::create_dir_all(&dataset_path).unwrap();
+        fs::write(dataset_path.join("table.sql"), "SELECT 1").unwrap();
+        let result = discover_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_files_skips_subdirectories_at_table_level() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        fs::create_dir(dataset_path.join("subdir")).unwrap();
+        fs::write(dataset_path.join("table.sql"), "SELECT 1").unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 1);
+    }
+
+    #[test]
+    fn test_discover_files_ignores_other_file_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        fs::write(dataset_path.join("readme.md"), "# Readme").unwrap();
+        fs::write(dataset_path.join("data.csv"), "a,b,c").unwrap();
+        fs::write(dataset_path.join("config.json"), "{}").unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert!(result.sql_files.is_empty());
+        assert!(result.parquet_files.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sql_files_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        fs::write(dataset_path.join("t.sql"), "SELECT 1").unwrap();
+        let parquet_path = dataset_path.join("p.parquet");
+        fs::write(&parquet_path, "dummy").unwrap();
+        fs::write(dataset_path.join("p.schema.json"), r#"[{"name": "id", "type": "INT64"}]"#).unwrap();
+        let sql_files = discover_sql_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(sql_files.len(), 1);
+        assert_eq!(sql_files[0].table, "t");
+    }
+
+    #[test]
+    fn test_discover_parquet_files_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        fs::write(dataset_path.join("t.sql"), "SELECT 1").unwrap();
+        let parquet_path = dataset_path.join("p.parquet");
+        fs::write(&parquet_path, "dummy").unwrap();
+        fs::write(dataset_path.join("p.schema.json"), r#"[{"name": "id", "type": "INT64"}]"#).unwrap();
+        let parquet_files = discover_parquet_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(parquet_files.len(), 1);
+        assert_eq!(parquet_files[0].table, "p");
+    }
+
+    #[test]
+    fn test_sql_file_full_table_name() {
+        let sql_file = SqlFile {
+            project: "proj".to_string(),
+            dataset: "ds".to_string(),
+            table: "tbl".to_string(),
+            path: "/path/to/file.sql".to_string(),
+            sql: "SELECT 1".to_string(),
+        };
+        assert_eq!(sql_file.full_table_name(), "proj.ds.tbl");
+    }
+
+    #[test]
+    fn test_parquet_file_full_table_name() {
+        let parquet_file = ParquetFile {
+            project: "proj".to_string(),
+            dataset: "ds".to_string(),
+            table: "tbl".to_string(),
+            path: "/path/to/file.parquet".to_string(),
+            schema: vec![],
+        };
+        assert_eq!(parquet_file.full_table_name(), "proj.ds.tbl");
+    }
+
+    #[test]
+    fn test_sql_file_clone() {
+        let sql_file = SqlFile {
+            project: "p".to_string(),
+            dataset: "d".to_string(),
+            table: "t".to_string(),
+            path: "/path".to_string(),
+            sql: "SELECT 1".to_string(),
+        };
+        let cloned = sql_file.clone();
+        assert_eq!(cloned.project, sql_file.project);
+        assert_eq!(cloned.sql, sql_file.sql);
+    }
+
+    #[test]
+    fn test_parquet_file_clone() {
+        let parquet_file = ParquetFile {
+            project: "p".to_string(),
+            dataset: "d".to_string(),
+            table: "t".to_string(),
+            path: "/path".to_string(),
+            schema: vec![ColumnDef::int64("id")],
+        };
+        let cloned = parquet_file.clone();
+        assert_eq!(cloned.project, parquet_file.project);
+        assert_eq!(cloned.schema.len(), 1);
+    }
+
+    #[test]
+    fn test_discovered_files_clone() {
+        let discovered = DiscoveredFiles {
+            sql_files: vec![SqlFile {
+                project: "p".to_string(),
+                dataset: "d".to_string(),
+                table: "t".to_string(),
+                path: "/path".to_string(),
+                sql: "SELECT 1".to_string(),
+            }],
+            parquet_files: vec![],
+        };
+        let cloned = discovered.clone();
+        assert_eq!(cloned.sql_files.len(), 1);
+        assert!(cloned.parquet_files.is_empty());
+    }
+
+    #[test]
+    fn test_sql_file_debug() {
+        let sql_file = SqlFile {
+            project: "p".to_string(),
+            dataset: "d".to_string(),
+            table: "t".to_string(),
+            path: "/path".to_string(),
+            sql: "SELECT 1".to_string(),
+        };
+        let debug_str = format!("{:?}", sql_file);
+        assert!(debug_str.contains("SqlFile"));
+        assert!(debug_str.contains("project"));
+    }
+
+    #[test]
+    fn test_parquet_file_debug() {
+        let parquet_file = ParquetFile {
+            project: "p".to_string(),
+            dataset: "d".to_string(),
+            table: "t".to_string(),
+            path: "/path".to_string(),
+            schema: vec![],
+        };
+        let debug_str = format!("{:?}", parquet_file);
+        assert!(debug_str.contains("ParquetFile"));
+    }
+
+    #[test]
+    fn test_discovered_files_debug() {
+        let discovered = DiscoveredFiles {
+            sql_files: vec![],
+            parquet_files: vec![],
+        };
+        let debug_str = format!("{:?}", discovered);
+        assert!(debug_str.contains("DiscoveredFiles"));
+    }
+
+    #[test]
+    fn test_discover_multiple_projects_and_datasets() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        for project in ["proj1", "proj2"] {
+            for dataset in ["ds1", "ds2"] {
+                let path = root.join(project).join(dataset);
+                fs::create_dir_all(&path).unwrap();
+                fs::write(path.join("table.sql"), format!("SELECT * FROM {}.{}", project, dataset)).unwrap();
+            }
+        }
+        let result = discover_files(root.to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 4);
+    }
+
+    #[test]
+    fn test_discover_mixed_sql_and_parquet() {
+        let temp_dir = TempDir::new().unwrap();
+        let dataset_path = create_test_structure(&temp_dir);
+        fs::write(dataset_path.join("computed.sql"), "SELECT 1").unwrap();
+        fs::write(dataset_path.join("source.parquet"), "dummy").unwrap();
+        fs::write(dataset_path.join("source.schema.json"), r#"[{"name": "x", "type": "STRING"}]"#).unwrap();
+        let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(result.sql_files.len(), 1);
+        assert_eq!(result.parquet_files.len(), 1);
+        assert_eq!(result.sql_files[0].table, "computed");
+        assert_eq!(result.parquet_files[0].table, "source");
+    }
+}
