@@ -731,7 +731,8 @@ mod tests {
 
     #[test]
     fn test_insert_params_deserialization() {
-        let json_str = r#"{"sessionId":"abc-123","tableName":"test_table","rows":[[1,"a"],[2,"b"]]}"#;
+        let json_str =
+            r#"{"sessionId":"abc-123","tableName":"test_table","rows":[[1,"a"],[2,"b"]]}"#;
         let params: InsertParams = serde_json::from_str(json_str).unwrap();
         assert_eq!(params.session_id, "abc-123");
         assert_eq!(params.table_name, "test_table");
@@ -757,7 +758,8 @@ mod tests {
 
     #[test]
     fn test_dag_table_def_deserialization_with_schema_and_rows() {
-        let json_str = r#"{"name":"source","schema":[{"name":"id","type":"INT64"}],"rows":[[1],[2]]}"#;
+        let json_str =
+            r#"{"name":"source","schema":[{"name":"id","type":"INT64"}],"rows":[[1],[2]]}"#;
         let def: DagTableDef = serde_json::from_str(json_str).unwrap();
         assert_eq!(def.name, "source");
         assert!(def.sql.is_none());
@@ -798,7 +800,10 @@ mod tests {
         let json_str = r#"{"sessionId":"abc-123","tableNames":["t1","t2"],"retryCount":3}"#;
         let params: RunDagParams = serde_json::from_str(json_str).unwrap();
         assert_eq!(params.session_id, "abc-123");
-        assert_eq!(params.table_names, Some(vec!["t1".to_string(), "t2".to_string()]));
+        assert_eq!(
+            params.table_names,
+            Some(vec!["t1".to_string(), "t2".to_string()])
+        );
         assert_eq!(params.retry_count, 3);
     }
 

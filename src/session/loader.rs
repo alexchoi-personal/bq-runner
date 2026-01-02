@@ -287,7 +287,11 @@ mod tests {
         fs::write(dataset_path.join("t.sql"), "SELECT 1").unwrap();
         let parquet_path = dataset_path.join("p.parquet");
         fs::write(&parquet_path, "dummy").unwrap();
-        fs::write(dataset_path.join("p.schema.json"), r#"[{"name": "id", "type": "INT64"}]"#).unwrap();
+        fs::write(
+            dataset_path.join("p.schema.json"),
+            r#"[{"name": "id", "type": "INT64"}]"#,
+        )
+        .unwrap();
         let sql_files = discover_sql_files(temp_dir.path().to_str().unwrap()).unwrap();
         assert_eq!(sql_files.len(), 1);
         assert_eq!(sql_files[0].table, "t");
@@ -300,7 +304,11 @@ mod tests {
         fs::write(dataset_path.join("t.sql"), "SELECT 1").unwrap();
         let parquet_path = dataset_path.join("p.parquet");
         fs::write(&parquet_path, "dummy").unwrap();
-        fs::write(dataset_path.join("p.schema.json"), r#"[{"name": "id", "type": "INT64"}]"#).unwrap();
+        fs::write(
+            dataset_path.join("p.schema.json"),
+            r#"[{"name": "id", "type": "INT64"}]"#,
+        )
+        .unwrap();
         let parquet_files = discover_parquet_files(temp_dir.path().to_str().unwrap()).unwrap();
         assert_eq!(parquet_files.len(), 1);
         assert_eq!(parquet_files[0].table, "p");
@@ -420,7 +428,11 @@ mod tests {
             for dataset in ["ds1", "ds2"] {
                 let path = root.join(project).join(dataset);
                 fs::create_dir_all(&path).unwrap();
-                fs::write(path.join("table.sql"), format!("SELECT * FROM {}.{}", project, dataset)).unwrap();
+                fs::write(
+                    path.join("table.sql"),
+                    format!("SELECT * FROM {}.{}", project, dataset),
+                )
+                .unwrap();
             }
         }
         let result = discover_files(root.to_str().unwrap()).unwrap();
@@ -433,7 +445,11 @@ mod tests {
         let dataset_path = create_test_structure(&temp_dir);
         fs::write(dataset_path.join("computed.sql"), "SELECT 1").unwrap();
         fs::write(dataset_path.join("source.parquet"), "dummy").unwrap();
-        fs::write(dataset_path.join("source.schema.json"), r#"[{"name": "x", "type": "STRING"}]"#).unwrap();
+        fs::write(
+            dataset_path.join("source.schema.json"),
+            r#"[{"name": "x", "type": "STRING"}]"#,
+        )
+        .unwrap();
         let result = discover_files(temp_dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.sql_files.len(), 1);
         assert_eq!(result.parquet_files.len(), 1);

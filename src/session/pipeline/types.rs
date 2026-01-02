@@ -148,7 +148,10 @@ mod tests {
     fn test_pipeline_result_all_succeeded_false_with_failed() {
         let result = PipelineResult {
             succeeded: vec!["a".to_string()],
-            failed: vec![TableError { table: "b".to_string(), error: "err".to_string() }],
+            failed: vec![TableError {
+                table: "b".to_string(),
+                error: "err".to_string(),
+            }],
             skipped: vec![],
         };
         assert!(!result.all_succeeded());
@@ -168,7 +171,10 @@ mod tests {
     fn test_pipeline_result_clone() {
         let result = PipelineResult {
             succeeded: vec!["x".to_string()],
-            failed: vec![TableError { table: "y".to_string(), error: "e".to_string() }],
+            failed: vec![TableError {
+                table: "y".to_string(),
+                error: "e".to_string(),
+            }],
             skipped: vec!["z".to_string()],
         };
         let cloned = result.clone();
@@ -212,14 +218,23 @@ mod tests {
 
     #[test]
     fn test_table_error_eq() {
-        let e1 = TableError { table: "t".to_string(), error: "e".to_string() };
-        let e2 = TableError { table: "t".to_string(), error: "e".to_string() };
+        let e1 = TableError {
+            table: "t".to_string(),
+            error: "e".to_string(),
+        };
+        let e2 = TableError {
+            table: "t".to_string(),
+            error: "e".to_string(),
+        };
         assert_eq!(e1, e2);
     }
 
     #[test]
     fn test_table_error_debug() {
-        let err = TableError { table: "t".to_string(), error: "e".to_string() };
+        let err = TableError {
+            table: "t".to_string(),
+            error: "e".to_string(),
+        };
         let debug = format!("{:?}", err);
         assert!(debug.contains("TableError"));
     }
@@ -288,9 +303,7 @@ mod tests {
     #[test]
     fn test_stream_state_is_ready_false_has_deps() {
         let state = StreamState {
-            pending_deps: HashMap::from([
-                ("a".to_string(), HashSet::from(["b".to_string()]))
-            ]),
+            pending_deps: HashMap::from([("a".to_string(), HashSet::from(["b".to_string()]))]),
             completed: HashSet::new(),
             blocked: HashSet::new(),
             in_flight: HashSet::new(),

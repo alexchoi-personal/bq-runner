@@ -401,7 +401,10 @@ mod tests {
     }
 
     async fn create_session_for_test(methods: &RpcMethods) -> String {
-        let result = methods.dispatch("bq.createSession", json!({})).await.unwrap();
+        let result = methods
+            .dispatch("bq.createSession", json!({}))
+            .await
+            .unwrap();
         result["sessionId"].as_str().unwrap().to_string()
     }
 
@@ -421,14 +424,20 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_unknown_method() {
         let methods = create_rpc_methods();
-        let err = methods.dispatch("unknown.method", json!({})).await.unwrap_err();
+        let err = methods
+            .dispatch("unknown.method", json!({}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::InvalidRequest(_)));
     }
 
     #[tokio::test]
     async fn test_create_session() {
         let methods = create_rpc_methods();
-        let result = methods.dispatch("bq.createSession", json!({})).await.unwrap();
+        let result = methods
+            .dispatch("bq.createSession", json!({}))
+            .await
+            .unwrap();
         assert!(result["sessionId"].is_string());
     }
 
@@ -436,14 +445,20 @@ mod tests {
     async fn test_destroy_session() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.destroySession", json!({"sessionId": session_id})).await.unwrap();
+        let result = methods
+            .dispatch("bq.destroySession", json!({"sessionId": session_id}))
+            .await
+            .unwrap();
         assert_eq!(result["success"], true);
     }
 
     #[tokio::test]
     async fn test_destroy_session_invalid_uuid() {
         let methods = create_rpc_methods();
-        let err = methods.dispatch("bq.destroySession", json!({"sessionId": "not-a-uuid"})).await.unwrap_err();
+        let err = methods
+            .dispatch("bq.destroySession", json!({"sessionId": "not-a-uuid"}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::InvalidRequest(_)));
     }
 
@@ -451,7 +466,13 @@ mod tests {
     async fn test_query() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.query", json!({"sessionId": session_id, "sql": "SELECT 1 AS value"})).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.query",
+                json!({"sessionId": session_id, "sql": "SELECT 1 AS value"}),
+            )
+            .await
+            .unwrap();
         assert!(result["schema"].is_object() || result["rows"].is_array());
     }
 
@@ -459,11 +480,17 @@ mod tests {
     async fn test_create_table() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.createTable", json!({
-            "sessionId": session_id,
-            "tableName": "test_table",
-            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.createTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table",
+                    "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["success"], true);
     }
 
@@ -471,11 +498,17 @@ mod tests {
     async fn test_insert_empty_rows() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.insert", json!({
-            "sessionId": session_id,
-            "tableName": "test_table",
-            "rows": []
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.insert",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table",
+                    "rows": []
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["insertedRows"], 0);
     }
 
@@ -483,16 +516,28 @@ mod tests {
     async fn test_insert_with_array_rows() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        methods.dispatch("bq.createTable", json!({
-            "sessionId": session_id,
-            "tableName": "test_table",
-            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
-        })).await.unwrap();
-        let result = methods.dispatch("bq.insert", json!({
-            "sessionId": session_id,
-            "tableName": "test_table",
-            "rows": [[1, "Alice"], [2, "Bob"]]
-        })).await.unwrap();
+        methods
+            .dispatch(
+                "bq.createTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table",
+                    "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+                }),
+            )
+            .await
+            .unwrap();
+        let result = methods
+            .dispatch(
+                "bq.insert",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table",
+                    "rows": [[1, "Alice"], [2, "Bob"]]
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["insertedRows"], 2);
     }
 
@@ -500,16 +545,28 @@ mod tests {
     async fn test_insert_with_object_rows() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        methods.dispatch("bq.createTable", json!({
-            "sessionId": session_id,
-            "tableName": "test_table2",
-            "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
-        })).await.unwrap();
-        let result = methods.dispatch("bq.insert", json!({
-            "sessionId": session_id,
-            "tableName": "test_table2",
-            "rows": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
-        })).await.unwrap();
+        methods
+            .dispatch(
+                "bq.createTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table2",
+                    "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+                }),
+            )
+            .await
+            .unwrap();
+        let result = methods
+            .dispatch(
+                "bq.insert",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table2",
+                    "rows": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["insertedRows"], 2);
     }
 
@@ -517,16 +574,28 @@ mod tests {
     async fn test_insert_with_mixed_rows_filters_invalid() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        methods.dispatch("bq.createTable", json!({
-            "sessionId": session_id,
-            "tableName": "test_table3",
-            "schema": [{"name": "id", "type": "INT64"}]
-        })).await.unwrap();
-        let result = methods.dispatch("bq.insert", json!({
-            "sessionId": session_id,
-            "tableName": "test_table3",
-            "rows": [[1], "invalid", [2], null, [3]]
-        })).await.unwrap();
+        methods
+            .dispatch(
+                "bq.createTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table3",
+                    "schema": [{"name": "id", "type": "INT64"}]
+                }),
+            )
+            .await
+            .unwrap();
+        let result = methods
+            .dispatch(
+                "bq.insert",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "test_table3",
+                    "rows": [[1], "invalid", [2], null, [3]]
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["insertedRows"], 3);
     }
 
@@ -556,9 +625,15 @@ mod tests {
                 {"name": "derived", "sql": "SELECT * FROM source"}
             ]
         })).await.unwrap();
-        let result = methods.dispatch("bq.runDag", json!({
-            "sessionId": session_id
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.runDag",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["success"].is_boolean());
         assert!(result["succeededTables"].is_array());
         assert!(result["failedTables"].is_array());
@@ -576,11 +651,17 @@ mod tests {
                 {"name": "derived", "sql": "SELECT * FROM source"}
             ]
         })).await.unwrap();
-        let result = methods.dispatch("bq.runDag", json!({
-            "sessionId": session_id,
-            "tableNames": ["derived"],
-            "retryCount": 1
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.runDag",
+                json!({
+                    "sessionId": session_id,
+                    "tableNames": ["derived"],
+                    "retryCount": 1
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["success"].is_boolean());
     }
 
@@ -594,11 +675,17 @@ mod tests {
                 {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1]]}
             ]
         })).await.unwrap();
-        let result = methods.dispatch("bq.retryDag", json!({
-            "sessionId": session_id,
-            "failedTables": [],
-            "skippedTables": []
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.retryDag",
+                json!({
+                    "sessionId": session_id,
+                    "failedTables": [],
+                    "skippedTables": []
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["success"].is_boolean());
     }
 
@@ -612,9 +699,15 @@ mod tests {
                 {"name": "source", "schema": [{"name": "id", "type": "INT64"}], "rows": [[1]]}
             ]
         })).await.unwrap();
-        let result = methods.dispatch("bq.getDag", json!({
-            "sessionId": session_id
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getDag",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["tables"].is_array());
     }
 
@@ -629,9 +722,14 @@ mod tests {
     async fn test_list_tables_params_valid() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.listTables", json!({
-            "sessionId": session_id
-        })).await;
+        let result = methods
+            .dispatch(
+                "bq.listTables",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await;
         assert!(result.is_err() || result.unwrap()["tables"].is_array());
     }
 
@@ -639,10 +737,15 @@ mod tests {
     async fn test_describe_table_params_valid() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.describeTable", json!({
-            "sessionId": session_id,
-            "tableName": "describe_me"
-        })).await;
+        let result = methods
+            .dispatch(
+                "bq.describeTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "describe_me"
+                }),
+            )
+            .await;
         assert!(result.is_err() || result.unwrap()["name"].is_string());
     }
 
@@ -650,14 +753,26 @@ mod tests {
     async fn test_set_and_get_default_project() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.setDefaultProject", json!({
-            "sessionId": session_id,
-            "project": "MY_PROJECT"
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.setDefaultProject",
+                json!({
+                    "sessionId": session_id,
+                    "project": "MY_PROJECT"
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["success"], true);
-        let result = methods.dispatch("bq.getDefaultProject", json!({
-            "sessionId": session_id
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getDefaultProject",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["project"].is_string());
     }
 
@@ -665,18 +780,36 @@ mod tests {
     async fn test_set_default_project_to_none() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        methods.dispatch("bq.setDefaultProject", json!({
-            "sessionId": session_id,
-            "project": "SOME_PROJECT"
-        })).await.unwrap();
-        let result = methods.dispatch("bq.setDefaultProject", json!({
-            "sessionId": session_id,
-            "project": null
-        })).await.unwrap();
+        methods
+            .dispatch(
+                "bq.setDefaultProject",
+                json!({
+                    "sessionId": session_id,
+                    "project": "SOME_PROJECT"
+                }),
+            )
+            .await
+            .unwrap();
+        let result = methods
+            .dispatch(
+                "bq.setDefaultProject",
+                json!({
+                    "sessionId": session_id,
+                    "project": null
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["success"], true);
-        let result = methods.dispatch("bq.getDefaultProject", json!({
-            "sessionId": session_id
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getDefaultProject",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(result["project"], Value::Null);
     }
 
@@ -684,9 +817,15 @@ mod tests {
     async fn test_get_projects() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.getProjects", json!({
-            "sessionId": session_id
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getProjects",
+                json!({
+                    "sessionId": session_id
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["projects"].is_array());
     }
 
@@ -694,10 +833,16 @@ mod tests {
     async fn test_get_datasets() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.getDatasets", json!({
-            "sessionId": session_id,
-            "project": "test-project"
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getDatasets",
+                json!({
+                    "sessionId": session_id,
+                    "project": "test-project"
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["datasets"].is_array());
     }
 
@@ -705,11 +850,17 @@ mod tests {
     async fn test_get_tables_in_dataset() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let result = methods.dispatch("bq.getTablesInDataset", json!({
-            "sessionId": session_id,
-            "project": "test-project",
-            "dataset": "test-dataset"
-        })).await.unwrap();
+        let result = methods
+            .dispatch(
+                "bq.getTablesInDataset",
+                json!({
+                    "sessionId": session_id,
+                    "project": "test-project",
+                    "dataset": "test-dataset"
+                }),
+            )
+            .await
+            .unwrap();
         assert!(result["tables"].is_array());
     }
 
@@ -729,18 +880,26 @@ mod tests {
     async fn test_dispatch_all_methods() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        methods.dispatch("bq.createTable", json!({
-            "sessionId": session_id,
-            "tableName": "t",
-            "schema": [{"name": "id", "type": "INT64"}]
-        })).await.unwrap();
-        let all_methods = vec![
-            ("bq.ping", json!({})),
-            ("bq.createSession", json!({})),
-        ];
+        methods
+            .dispatch(
+                "bq.createTable",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "t",
+                    "schema": [{"name": "id", "type": "INT64"}]
+                }),
+            )
+            .await
+            .unwrap();
+        let all_methods = vec![("bq.ping", json!({})), ("bq.createSession", json!({}))];
         for (method, params) in all_methods {
             let result = methods.dispatch(method, params).await;
-            assert!(result.is_ok(), "Method {} failed: {:?}", method, result.err());
+            assert!(
+                result.is_ok(),
+                "Method {} failed: {:?}",
+                method,
+                result.err()
+            );
         }
     }
 
@@ -748,10 +907,16 @@ mod tests {
     async fn test_load_sql_directory_not_found() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let err = methods.dispatch("bq.loadSqlDirectory", json!({
-            "sessionId": session_id,
-            "rootPath": "/nonexistent/path"
-        })).await.unwrap_err();
+        let err = methods
+            .dispatch(
+                "bq.loadSqlDirectory",
+                json!({
+                    "sessionId": session_id,
+                    "rootPath": "/nonexistent/path"
+                }),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Executor(_)));
     }
 
@@ -759,10 +924,16 @@ mod tests {
     async fn test_load_parquet_directory_not_found() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let err = methods.dispatch("bq.loadParquetDirectory", json!({
-            "sessionId": session_id,
-            "rootPath": "/nonexistent/path"
-        })).await.unwrap_err();
+        let err = methods
+            .dispatch(
+                "bq.loadParquetDirectory",
+                json!({
+                    "sessionId": session_id,
+                    "rootPath": "/nonexistent/path"
+                }),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Executor(_)));
     }
 
@@ -770,10 +941,16 @@ mod tests {
     async fn test_load_dag_from_directory_not_found() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let err = methods.dispatch("bq.loadDagFromDirectory", json!({
-            "sessionId": session_id,
-            "rootPath": "/nonexistent/path"
-        })).await.unwrap_err();
+        let err = methods
+            .dispatch(
+                "bq.loadDagFromDirectory",
+                json!({
+                    "sessionId": session_id,
+                    "rootPath": "/nonexistent/path"
+                }),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Executor(_)));
     }
 
@@ -781,12 +958,18 @@ mod tests {
     async fn test_load_parquet_not_found() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
-        let err = methods.dispatch("bq.loadParquet", json!({
-            "sessionId": session_id,
-            "tableName": "t",
-            "path": "/nonexistent/file.parquet",
-            "schema": [{"name": "id", "type": "INT64"}]
-        })).await.unwrap_err();
+        let err = methods
+            .dispatch(
+                "bq.loadParquet",
+                json!({
+                    "sessionId": session_id,
+                    "tableName": "t",
+                    "path": "/nonexistent/file.parquet",
+                    "schema": [{"name": "id", "type": "INT64"}]
+                }),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Executor(_)));
     }
 }

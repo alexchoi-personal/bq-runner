@@ -471,7 +471,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_query_basic() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT 1 AS num, 'hello' AS str").await.unwrap();
+        let result = executor
+            .execute_query("SELECT 1 AS num, 'hello' AS str")
+            .await
+            .unwrap();
         assert_eq!(result.columns.len(), 2);
         assert_eq!(result.columns[0].name, "num");
         assert_eq!(result.columns[1].name, "str");
@@ -481,7 +484,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_query_error() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT * FROM nonexistent_table").await;
+        let result = executor
+            .execute_query("SELECT * FROM nonexistent_table")
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, crate::error::Error::Executor(_)));
@@ -490,22 +495,32 @@ mod tests {
     #[tokio::test]
     async fn test_execute_statement_basic() {
         let executor = YachtSqlExecutor::new();
-        executor.execute_statement("CREATE TABLE test_stmt (id INT64)").await.unwrap();
-        let count = executor.execute_statement("INSERT INTO test_stmt VALUES (1), (2)").await;
+        executor
+            .execute_statement("CREATE TABLE test_stmt (id INT64)")
+            .await
+            .unwrap();
+        let count = executor
+            .execute_statement("INSERT INTO test_stmt VALUES (1), (2)")
+            .await;
         assert!(count.is_ok());
     }
 
     #[tokio::test]
     async fn test_execute_statement_error() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_statement("INSERT INTO nonexistent VALUES (1)").await;
+        let result = executor
+            .execute_statement("INSERT INTO nonexistent VALUES (1)")
+            .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_list_tables() {
         let executor = YachtSqlExecutor::new();
-        executor.execute_statement("CREATE TABLE list_test (id INT64)").await.unwrap();
+        executor
+            .execute_statement("CREATE TABLE list_test (id INT64)")
+            .await
+            .unwrap();
         let result = executor.list_tables().await;
         assert!(result.is_ok() || result.is_err());
     }
@@ -513,7 +528,10 @@ mod tests {
     #[tokio::test]
     async fn test_describe_table() {
         let executor = YachtSqlExecutor::new();
-        executor.execute_statement("CREATE TABLE desc_test (id INT64, name STRING)").await.unwrap();
+        executor
+            .execute_statement("CREATE TABLE desc_test (id INT64, name STRING)")
+            .await
+            .unwrap();
         let result = executor.describe_table("desc_test").await;
         assert!(result.is_ok() || result.is_err());
     }
@@ -554,7 +572,9 @@ mod tests {
     async fn test_load_parquet_file_not_found() {
         let executor = YachtSqlExecutor::new();
         let schema = vec![crate::rpc::types::ColumnDef::int64("id")];
-        let result = executor.load_parquet("test_table", "/nonexistent/file.parquet", &schema).await;
+        let result = executor
+            .load_parquet("test_table", "/nonexistent/file.parquet", &schema)
+            .await;
         assert!(result.is_err());
     }
 
@@ -576,7 +596,8 @@ mod tests {
         let batch = arrow::record_batch::RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(id_array), Arc::new(name_array)],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -588,15 +609,17 @@ mod tests {
             crate::rpc::types::ColumnDef::string("name"),
         ];
 
-        let rows = executor.load_parquet(
-            "parquet_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("parquet_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 3);
 
-        let result = executor.execute_query("SELECT * FROM parquet_test").await.unwrap();
+        let result = executor
+            .execute_query("SELECT * FROM parquet_test")
+            .await
+            .unwrap();
         assert_eq!(result.rows.len(), 3);
     }
 
@@ -607,16 +630,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let parquet_path = temp_dir.path().join("nulls.parquet");
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", ArrowDataType::Int64, true),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            true,
+        )]));
 
         let id_array = Int64Array::from(vec![Some(1), None, Some(3)]);
 
-        let batch = arrow::record_batch::RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(id_array)],
-        ).unwrap();
+        let batch =
+            arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array)])
+                .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -625,11 +649,10 @@ mod tests {
 
         let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
 
-        let rows = executor.load_parquet(
-            "nulls_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("nulls_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 3);
     }
@@ -674,7 +697,8 @@ mod tests {
                 Arc::new(StringArray::from(vec!["hello"])),
                 Arc::new(LargeStringArray::from(vec!["world"])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -697,11 +721,10 @@ mod tests {
             crate::rpc::types::ColumnDef::string("large_str_col"),
         ];
 
-        let rows = executor.load_parquet(
-            "types_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("types_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 1);
     }
@@ -728,7 +751,8 @@ mod tests {
                 Arc::new(Int64Array::from(vec![19000i64])),
                 Arc::new(Int64Array::from(vec![1640995200000000i64])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -742,11 +766,10 @@ mod tests {
             crate::rpc::types::ColumnDef::timestamp("i64_ts"),
         ];
 
-        let rows = executor.load_parquet(
-            "dates_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("dates_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 1);
     }
@@ -759,10 +782,26 @@ mod tests {
         let parquet_path = temp_dir.path().join("timestamps.parquet");
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("ts_s", ArrowDataType::Timestamp(TimeUnit::Second, None), false),
-            Field::new("ts_ms", ArrowDataType::Timestamp(TimeUnit::Millisecond, None), false),
-            Field::new("ts_us", ArrowDataType::Timestamp(TimeUnit::Microsecond, None), false),
-            Field::new("ts_ns", ArrowDataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "ts_s",
+                ArrowDataType::Timestamp(TimeUnit::Second, None),
+                false,
+            ),
+            Field::new(
+                "ts_ms",
+                ArrowDataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new(
+                "ts_us",
+                ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new(
+                "ts_ns",
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
 
         let batch = arrow::record_batch::RecordBatch::try_new(
@@ -773,7 +812,8 @@ mod tests {
                 Arc::new(TimestampMicrosecondArray::from(vec![1640995200000000i64])),
                 Arc::new(TimestampNanosecondArray::from(vec![1640995200000000000i64])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -787,11 +827,14 @@ mod tests {
             crate::rpc::types::ColumnDef::timestamp("ts_ns"),
         ];
 
-        let rows = executor.load_parquet(
-            "timestamps_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet(
+                "timestamps_test",
+                parquet_path.to_str().unwrap(),
+                &col_schema,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(rows, 1);
     }
@@ -803,14 +846,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let parquet_path = temp_dir.path().join("quotes.parquet");
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("text", ArrowDataType::Utf8, false),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "text",
+            ArrowDataType::Utf8,
+            false,
+        )]));
 
         let batch = arrow::record_batch::RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(StringArray::from(vec!["it's a test"]))],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -819,11 +865,10 @@ mod tests {
 
         let col_schema = vec![crate::rpc::types::ColumnDef::string("text")];
 
-        let rows = executor.load_parquet(
-            "quotes_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("quotes_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 1);
     }
@@ -832,13 +877,16 @@ mod tests {
     fn test_query_result_to_bq_response() {
         let result = QueryResult {
             columns: vec![
-                ColumnInfo { name: "id".to_string(), data_type: "INT64".to_string() },
-                ColumnInfo { name: "name".to_string(), data_type: "STRING".to_string() },
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "INT64".to_string(),
+                },
+                ColumnInfo {
+                    name: "name".to_string(),
+                    data_type: "STRING".to_string(),
+                },
             ],
-            rows: vec![
-                vec![json!(1), json!("Alice")],
-                vec![json!(2), json!("Bob")],
-            ],
+            rows: vec![vec![json!(1), json!("Alice")], vec![json!(2), json!("Bob")]],
         };
 
         let response = result.to_bq_response();
@@ -877,9 +925,15 @@ mod tests {
         assert_eq!(datatype_to_bq_type(&DataType::Geography), "GEOGRAPHY");
         assert_eq!(datatype_to_bq_type(&DataType::Json), "JSON");
         assert_eq!(datatype_to_bq_type(&DataType::Struct(vec![])), "STRUCT");
-        assert_eq!(datatype_to_bq_type(&DataType::Array(Box::new(DataType::Int64))), "ARRAY<INT64>");
+        assert_eq!(
+            datatype_to_bq_type(&DataType::Array(Box::new(DataType::Int64))),
+            "ARRAY<INT64>"
+        );
         assert_eq!(datatype_to_bq_type(&DataType::Interval), "INTERVAL");
-        assert_eq!(datatype_to_bq_type(&DataType::Range(Box::new(DataType::Date))), "STRING");
+        assert_eq!(
+            datatype_to_bq_type(&DataType::Range(Box::new(DataType::Date))),
+            "STRING"
+        );
         assert_eq!(datatype_to_bq_type(&DataType::Unknown), "STRING");
     }
 
@@ -902,43 +956,70 @@ mod tests {
         let result = executor.execute_query("SELECT 'hello' AS s").await.unwrap();
         assert_eq!(result.rows[0][0], json!("hello"));
 
-        let result = executor.execute_query("SELECT DATE '2022-01-01' AS d").await.unwrap();
+        let result = executor
+            .execute_query("SELECT DATE '2022-01-01' AS d")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
 
-        let result = executor.execute_query("SELECT TIME '12:30:00' AS t").await.unwrap();
+        let result = executor
+            .execute_query("SELECT TIME '12:30:00' AS t")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
 
-        let result = executor.execute_query("SELECT DATETIME '2022-01-01 12:30:00' AS dt").await.unwrap();
+        let result = executor
+            .execute_query("SELECT DATETIME '2022-01-01 12:30:00' AS dt")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
 
-        let result = executor.execute_query("SELECT TIMESTAMP '2022-01-01 12:30:00 UTC' AS ts").await.unwrap();
+        let result = executor
+            .execute_query("SELECT TIMESTAMP '2022-01-01 12:30:00 UTC' AS ts")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
 
-        let result = executor.execute_query("SELECT [1, 2, 3] AS arr").await.unwrap();
+        let result = executor
+            .execute_query("SELECT [1, 2, 3] AS arr")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_array());
 
-        let result = executor.execute_query("SELECT STRUCT(1 AS a, 'b' AS b) AS s").await.unwrap();
+        let result = executor
+            .execute_query("SELECT STRUCT(1 AS a, 'b' AS b) AS s")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_object());
     }
 
     #[tokio::test]
     async fn test_yacht_value_bytes() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT b'hello' AS b").await.unwrap();
+        let result = executor
+            .execute_query("SELECT b'hello' AS b")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
     }
 
     #[tokio::test]
     async fn test_yacht_value_json() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT JSON '{\"a\": 1}' AS j").await.unwrap();
+        let result = executor
+            .execute_query("SELECT JSON '{\"a\": 1}' AS j")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_object() || result.rows[0][0].is_string());
     }
 
     #[tokio::test]
     async fn test_yacht_value_numeric() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT NUMERIC '123.456' AS n").await.unwrap();
+        let result = executor
+            .execute_query("SELECT NUMERIC '123.456' AS n")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string() || result.rows[0][0].is_number());
     }
 
@@ -980,7 +1061,10 @@ mod tests {
     #[test]
     fn test_query_result_clone() {
         let result = QueryResult {
-            columns: vec![ColumnInfo { name: "id".to_string(), data_type: "INT64".to_string() }],
+            columns: vec![ColumnInfo {
+                name: "id".to_string(),
+                data_type: "INT64".to_string(),
+            }],
             rows: vec![vec![json!(1)]],
         };
         let cloned = result.clone();
@@ -1005,16 +1089,17 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let parquet_path = temp_dir.path().join("empty.parquet");
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", ArrowDataType::Int64, false),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            ArrowDataType::Int64,
+            false,
+        )]));
 
         let id_array: Int64Array = Int64Array::from(vec![] as Vec<i64>);
 
-        let batch = arrow::record_batch::RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(id_array)],
-        ).unwrap();
+        let batch =
+            arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array)])
+                .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -1023,11 +1108,10 @@ mod tests {
 
         let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
 
-        let rows = executor.load_parquet(
-            "empty_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet("empty_test", parquet_path.to_str().unwrap(), &col_schema)
+            .await
+            .unwrap();
 
         assert_eq!(rows, 0);
     }
@@ -1041,11 +1125,9 @@ mod tests {
         std::fs::write(&invalid_path, b"not a parquet file").unwrap();
 
         let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
-        let result = executor.load_parquet(
-            "invalid_test",
-            invalid_path.to_str().unwrap(),
-            &col_schema,
-        ).await;
+        let result = executor
+            .load_parquet("invalid_test", invalid_path.to_str().unwrap(), &col_schema)
+            .await;
 
         assert!(result.is_err());
     }
@@ -1053,7 +1135,10 @@ mod tests {
     #[tokio::test]
     async fn test_table_to_query_result_error() {
         let executor = YachtSqlExecutor::new();
-        executor.execute_statement("CREATE TABLE err_test (id INT64)").await.unwrap();
+        executor
+            .execute_statement("CREATE TABLE err_test (id INT64)")
+            .await
+            .unwrap();
         let result = executor.execute_query("SELECT * FROM err_test").await;
         assert!(result.is_ok());
     }
@@ -1061,21 +1146,30 @@ mod tests {
     #[tokio::test]
     async fn test_yacht_value_interval() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT INTERVAL 1 DAY AS i").await.unwrap();
+        let result = executor
+            .execute_query("SELECT INTERVAL 1 DAY AS i")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
     }
 
     #[tokio::test]
     async fn test_yacht_value_bignumeric() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT BIGNUMERIC '12345678901234567890.123456789' AS bn").await.unwrap();
+        let result = executor
+            .execute_query("SELECT BIGNUMERIC '12345678901234567890.123456789' AS bn")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string() || result.rows[0][0].is_number());
     }
 
     #[tokio::test]
     async fn test_yacht_value_geography() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT ST_GEOGPOINT(-122.4194, 37.7749) AS g").await.unwrap();
+        let result = executor
+            .execute_query("SELECT ST_GEOGPOINT(-122.4194, 37.7749) AS g")
+            .await
+            .unwrap();
         assert!(result.rows[0][0].is_string());
     }
 
@@ -1110,14 +1204,19 @@ mod tests {
     #[tokio::test]
     async fn test_yacht_value_range() {
         let executor = YachtSqlExecutor::new();
-        let result = executor.execute_query("SELECT RANGE(DATE '2020-01-01', DATE '2020-12-31') AS r").await;
+        let result = executor
+            .execute_query("SELECT RANGE(DATE '2020-01-01', DATE '2020-12-31') AS r")
+            .await;
         assert!(result.is_ok() || result.is_err());
     }
 
     #[tokio::test]
     async fn test_yacht_value_default() {
         let executor = YachtSqlExecutor::new();
-        executor.execute_statement("CREATE TABLE def_test (id INT64 DEFAULT 0)").await.unwrap();
+        executor
+            .execute_statement("CREATE TABLE def_test (id INT64 DEFAULT 0)")
+            .await
+            .unwrap();
         let result = executor.execute_query("SELECT * FROM def_test").await;
         assert!(result.is_ok());
     }
@@ -1125,7 +1224,10 @@ mod tests {
     #[test]
     fn test_query_result_debug() {
         let result = QueryResult {
-            columns: vec![ColumnInfo { name: "id".to_string(), data_type: "INT64".to_string() }],
+            columns: vec![ColumnInfo {
+                name: "id".to_string(),
+                data_type: "INT64".to_string(),
+            }],
             rows: vec![vec![json!(1)]],
         };
         let debug_str = format!("{:?}", result);

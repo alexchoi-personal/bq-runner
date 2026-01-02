@@ -192,7 +192,10 @@ mod tests {
     #[tokio::test]
     async fn test_executor_mock_execute() {
         let executor = Executor::mock().unwrap();
-        executor.execute("CREATE TABLE mod_test (id INT64)").await.unwrap();
+        executor
+            .execute("CREATE TABLE mod_test (id INT64)")
+            .await
+            .unwrap();
         let count = executor.execute("INSERT INTO mod_test VALUES (1)").await;
         assert!(count.is_ok());
     }
@@ -208,8 +211,13 @@ mod tests {
     #[tokio::test]
     async fn test_executor_mock_execute_statement() {
         let executor = Executor::mock().unwrap();
-        executor.execute_statement("CREATE TABLE stmt_test (id INT64)").await.unwrap();
-        let count = executor.execute_statement("INSERT INTO stmt_test VALUES (1), (2)").await;
+        executor
+            .execute_statement("CREATE TABLE stmt_test (id INT64)")
+            .await
+            .unwrap();
+        let count = executor
+            .execute_statement("INSERT INTO stmt_test VALUES (1), (2)")
+            .await;
         assert!(count.is_ok());
     }
 
@@ -236,23 +244,24 @@ mod tests {
         let batch = arrow::record_batch::RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(id_array), Arc::new(name_array)],
-        ).unwrap();
+        )
+        .unwrap();
 
         let file = std::fs::File::create(&parquet_path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![
-            ColumnDef::int64("id"),
-            ColumnDef::string("name"),
-        ];
+        let col_schema = vec![ColumnDef::int64("id"), ColumnDef::string("name")];
 
-        let rows = executor.load_parquet(
-            "parquet_mod_test",
-            parquet_path.to_str().unwrap(),
-            &col_schema,
-        ).await.unwrap();
+        let rows = executor
+            .load_parquet(
+                "parquet_mod_test",
+                parquet_path.to_str().unwrap(),
+                &col_schema,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(rows, 2);
     }
@@ -260,7 +269,9 @@ mod tests {
     #[tokio::test]
     async fn test_executor_mock_set_default_project() {
         let executor = Executor::mock().unwrap();
-        executor.set_default_project(Some("my-project".to_string())).unwrap();
+        executor
+            .set_default_project(Some("my-project".to_string()))
+            .unwrap();
         let project = executor.get_default_project().unwrap();
         assert!(project.is_some());
     }
@@ -268,7 +279,9 @@ mod tests {
     #[tokio::test]
     async fn test_executor_mock_set_default_project_none() {
         let executor = Executor::mock().unwrap();
-        executor.set_default_project(Some("test".to_string())).unwrap();
+        executor
+            .set_default_project(Some("test".to_string()))
+            .unwrap();
         executor.set_default_project(None).unwrap();
         let project = executor.get_default_project().unwrap();
         assert!(project.is_none());
@@ -291,7 +304,9 @@ mod tests {
     #[tokio::test]
     async fn test_executor_mock_get_tables_in_dataset() {
         let executor = Executor::mock().unwrap();
-        let tables = executor.get_tables_in_dataset("project", "dataset").unwrap();
+        let tables = executor
+            .get_tables_in_dataset("project", "dataset")
+            .unwrap();
         assert!(tables.is_empty() || !tables.is_empty());
     }
 }

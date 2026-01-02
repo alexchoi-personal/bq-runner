@@ -13,7 +13,10 @@ fn create_rpc_methods() -> RpcMethods {
 }
 
 async fn create_session(methods: &RpcMethods) -> String {
-    let result = methods.dispatch("bq.createSession", json!({})).await.unwrap();
+    let result = methods
+        .dispatch("bq.createSession", json!({}))
+        .await
+        .unwrap();
     result["sessionId"].as_str().unwrap().to_string()
 }
 
@@ -44,18 +47,30 @@ async fn test_full_dag_workflow() {
     assert_eq!(result["success"], true);
     assert!(result["tables"].is_array());
 
-    let run_result = methods.dispatch("bq.runDag", json!({
-        "sessionId": session_id,
-        "retryCount": 0
-    })).await.unwrap();
+    let run_result = methods
+        .dispatch(
+            "bq.runDag",
+            json!({
+                "sessionId": session_id,
+                "retryCount": 0
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(run_result["success"], true);
     assert!(run_result["succeededTables"].as_array().unwrap().len() >= 2);
 
-    let query_result = methods.dispatch("bq.query", json!({
-        "sessionId": session_id,
-        "sql": "SELECT * FROM final_output ORDER BY scaled_id"
-    })).await.unwrap();
+    let query_result = methods
+        .dispatch(
+            "bq.query",
+            json!({
+                "sessionId": session_id,
+                "sql": "SELECT * FROM final_output ORDER BY scaled_id"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(query_result["rows"].is_array());
 }
@@ -65,25 +80,37 @@ async fn test_dag_with_retry() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.registerDag", json!({
-        "sessionId": session_id,
-        "tables": [
-            {
-                "name": "base",
-                "schema": [{"name": "x", "type": "INT64"}],
-                "rows": [[1], [2], [3]]
-            },
-            {
-                "name": "derived",
-                "sql": "SELECT x * 2 AS doubled FROM base"
-            }
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.registerDag",
+            json!({
+                "sessionId": session_id,
+                "tables": [
+                    {
+                        "name": "base",
+                        "schema": [{"name": "x", "type": "INT64"}],
+                        "rows": [[1], [2], [3]]
+                    },
+                    {
+                        "name": "derived",
+                        "sql": "SELECT x * 2 AS doubled FROM base"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let result = methods.dispatch("bq.runDag", json!({
-        "sessionId": session_id,
-        "retryCount": 2
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.runDag",
+            json!({
+                "sessionId": session_id,
+                "retryCount": 2
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(result["success"].is_boolean());
     assert!(result["succeededTables"].is_array());
@@ -94,30 +121,48 @@ async fn test_retry_dag_method() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.registerDag", json!({
-        "sessionId": session_id,
-        "tables": [
-            {
-                "name": "src",
-                "schema": [{"name": "n", "type": "INT64"}],
-                "rows": [[10]]
-            },
-            {
-                "name": "out",
-                "sql": "SELECT n + 1 AS result FROM src"
-            }
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.registerDag",
+            json!({
+                "sessionId": session_id,
+                "tables": [
+                    {
+                        "name": "src",
+                        "schema": [{"name": "n", "type": "INT64"}],
+                        "rows": [[10]]
+                    },
+                    {
+                        "name": "out",
+                        "sql": "SELECT n + 1 AS result FROM src"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.runDag", json!({
-        "sessionId": session_id
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.runDag",
+            json!({
+                "sessionId": session_id
+            }),
+        )
+        .await
+        .unwrap();
 
-    let retry_result = methods.dispatch("bq.retryDag", json!({
-        "sessionId": session_id,
-        "failedTables": [],
-        "skippedTables": []
-    })).await.unwrap();
+    let retry_result = methods
+        .dispatch(
+            "bq.retryDag",
+            json!({
+                "sessionId": session_id,
+                "failedTables": [],
+                "skippedTables": []
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(retry_result["success"].is_boolean());
 }
@@ -127,24 +172,36 @@ async fn test_get_dag() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.registerDag", json!({
-        "sessionId": session_id,
-        "tables": [
-            {
-                "name": "t1",
-                "schema": [{"name": "a", "type": "INT64"}],
-                "rows": [[1]]
-            },
-            {
-                "name": "t2",
-                "sql": "SELECT a FROM t1"
-            }
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.registerDag",
+            json!({
+                "sessionId": session_id,
+                "tables": [
+                    {
+                        "name": "t1",
+                        "schema": [{"name": "a", "type": "INT64"}],
+                        "rows": [[1]]
+                    },
+                    {
+                        "name": "t2",
+                        "sql": "SELECT a FROM t1"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let dag = methods.dispatch("bq.getDag", json!({
-        "sessionId": session_id
-    })).await.unwrap();
+    let dag = methods
+        .dispatch(
+            "bq.getDag",
+            json!({
+                "sessionId": session_id
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(dag["tables"].is_array());
     let tables = dag["tables"].as_array().unwrap();
@@ -162,12 +219,22 @@ async fn test_load_sql_directory() {
     fs::create_dir_all(&dataset_path).unwrap();
 
     fs::write(dataset_path.join("table1.sql"), "SELECT 1 AS id").unwrap();
-    fs::write(dataset_path.join("table2.sql"), "SELECT * FROM my_project.my_dataset.table1").unwrap();
+    fs::write(
+        dataset_path.join("table2.sql"),
+        "SELECT * FROM my_project.my_dataset.table1",
+    )
+    .unwrap();
 
-    let result = methods.dispatch("bq.loadSqlDirectory", json!({
-        "sessionId": session_id,
-        "rootPath": temp_dir.path().to_str().unwrap()
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.loadSqlDirectory",
+            json!({
+                "sessionId": session_id,
+                "rootPath": temp_dir.path().to_str().unwrap()
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result["success"], true);
     assert!(result["tablesLoaded"].is_array());
@@ -200,7 +267,8 @@ async fn test_load_parquet_directory() {
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(id_array), Arc::new(name_array)],
-    ).unwrap();
+    )
+    .unwrap();
 
     let parquet_path = dataset_path.join("users.parquet");
     let file = fs::File::create(&parquet_path).unwrap();
@@ -211,10 +279,16 @@ async fn test_load_parquet_directory() {
     let schema_json = r#"[{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]"#;
     fs::write(dataset_path.join("users.schema.json"), schema_json).unwrap();
 
-    let result = methods.dispatch("bq.loadParquetDirectory", json!({
-        "sessionId": session_id,
-        "rootPath": temp_dir.path().to_str().unwrap()
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.loadParquetDirectory",
+            json!({
+                "sessionId": session_id,
+                "rootPath": temp_dir.path().to_str().unwrap()
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result["success"], true);
     assert!(result["tablesLoaded"].is_array());
@@ -237,15 +311,14 @@ async fn test_load_dag_from_directory() {
     let dataset_path = project_path.join("reports");
     fs::create_dir_all(&dataset_path).unwrap();
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("value", DataType::Int64, false),
-    ]));
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
 
     let value_array = Int64Array::from(vec![10, 20, 30]);
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(value_array)],
-    ).unwrap();
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(value_array)]).unwrap();
 
     let parquet_path = dataset_path.join("source.parquet");
     let file = fs::File::create(&parquet_path).unwrap();
@@ -253,13 +326,27 @@ async fn test_load_dag_from_directory() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
-    fs::write(dataset_path.join("source.schema.json"), r#"[{"name": "value", "type": "INT64"}]"#).unwrap();
-    fs::write(dataset_path.join("computed.sql"), "SELECT value * 2 AS doubled FROM analytics.reports.source").unwrap();
+    fs::write(
+        dataset_path.join("source.schema.json"),
+        r#"[{"name": "value", "type": "INT64"}]"#,
+    )
+    .unwrap();
+    fs::write(
+        dataset_path.join("computed.sql"),
+        "SELECT value * 2 AS doubled FROM analytics.reports.source",
+    )
+    .unwrap();
 
-    let result = methods.dispatch("bq.loadDagFromDirectory", json!({
-        "sessionId": session_id,
-        "rootPath": temp_dir.path().to_str().unwrap()
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.loadDagFromDirectory",
+            json!({
+                "sessionId": session_id,
+                "rootPath": temp_dir.path().to_str().unwrap()
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result["success"], true);
     assert!(result["sourceTables"].is_array());
@@ -272,26 +359,44 @@ async fn test_table_operations() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    let create_result = methods.dispatch("bq.createTable", json!({
-        "sessionId": session_id,
-        "tableName": "ops_table",
-        "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
-    })).await.unwrap();
+    let create_result = methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session_id,
+                "tableName": "ops_table",
+                "schema": [{"name": "id", "type": "INT64"}, {"name": "name", "type": "STRING"}]
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(create_result["success"], true);
 
-    let insert_result = methods.dispatch("bq.insert", json!({
-        "sessionId": session_id,
-        "tableName": "ops_table",
-        "rows": [[1, "Alice"], [2, "Bob"]]
-    })).await.unwrap();
+    let insert_result = methods
+        .dispatch(
+            "bq.insert",
+            json!({
+                "sessionId": session_id,
+                "tableName": "ops_table",
+                "rows": [[1, "Alice"], [2, "Bob"]]
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(insert_result["insertedRows"].is_number());
 
-    let query_result = methods.dispatch("bq.query", json!({
-        "sessionId": session_id,
-        "sql": "SELECT * FROM ops_table"
-    })).await.unwrap();
+    let query_result = methods
+        .dispatch(
+            "bq.query",
+            json!({
+                "sessionId": session_id,
+                "sql": "SELECT * FROM ops_table"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(query_result["rows"].is_array());
 }
@@ -301,39 +406,57 @@ async fn test_dag_with_multiple_dependency_levels() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.registerDag", json!({
-        "sessionId": session_id,
-        "tables": [
-            {
-                "name": "level0",
-                "schema": [{"name": "x", "type": "INT64"}],
-                "rows": [[1]]
-            },
-            {
-                "name": "level1a",
-                "sql": "SELECT x + 1 AS x FROM level0"
-            },
-            {
-                "name": "level1b",
-                "sql": "SELECT x + 2 AS x FROM level0"
-            },
-            {
-                "name": "level2",
-                "sql": "SELECT a.x + b.x AS total FROM level1a a, level1b b"
-            }
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.registerDag",
+            json!({
+                "sessionId": session_id,
+                "tables": [
+                    {
+                        "name": "level0",
+                        "schema": [{"name": "x", "type": "INT64"}],
+                        "rows": [[1]]
+                    },
+                    {
+                        "name": "level1a",
+                        "sql": "SELECT x + 1 AS x FROM level0"
+                    },
+                    {
+                        "name": "level1b",
+                        "sql": "SELECT x + 2 AS x FROM level0"
+                    },
+                    {
+                        "name": "level2",
+                        "sql": "SELECT a.x + b.x AS total FROM level1a a, level1b b"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let result = methods.dispatch("bq.runDag", json!({
-        "sessionId": session_id
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.runDag",
+            json!({
+                "sessionId": session_id
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result["success"], true);
 
-    let query = methods.dispatch("bq.query", json!({
-        "sessionId": session_id,
-        "sql": "SELECT * FROM level2"
-    })).await.unwrap();
+    let query = methods
+        .dispatch(
+            "bq.query",
+            json!({
+                "sessionId": session_id,
+                "sql": "SELECT * FROM level2"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(query["rows"].is_array());
 }
@@ -343,29 +466,41 @@ async fn test_dag_target_specific_tables() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.registerDag", json!({
-        "sessionId": session_id,
-        "tables": [
-            {
-                "name": "base",
-                "schema": [{"name": "n", "type": "INT64"}],
-                "rows": [[5]]
-            },
-            {
-                "name": "branch_a",
-                "sql": "SELECT n * 2 AS n FROM base"
-            },
-            {
-                "name": "branch_b",
-                "sql": "SELECT n * 3 AS n FROM base"
-            }
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.registerDag",
+            json!({
+                "sessionId": session_id,
+                "tables": [
+                    {
+                        "name": "base",
+                        "schema": [{"name": "n", "type": "INT64"}],
+                        "rows": [[5]]
+                    },
+                    {
+                        "name": "branch_a",
+                        "sql": "SELECT n * 2 AS n FROM base"
+                    },
+                    {
+                        "name": "branch_b",
+                        "sql": "SELECT n * 3 AS n FROM base"
+                    }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let result = methods.dispatch("bq.runDag", json!({
-        "sessionId": session_id,
-        "tableNames": ["branch_a"]
-    })).await.unwrap();
+    let result = methods
+        .dispatch(
+            "bq.runDag",
+            json!({
+                "sessionId": session_id,
+                "tableNames": ["branch_a"]
+            }),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result["success"], true);
     let succeeded = result["succeededTables"].as_array().unwrap();
@@ -377,42 +512,78 @@ async fn test_session_project_catalog() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session_id,
-        "tableName": "proj1.dataset1.table1",
-        "schema": [{"name": "id", "type": "INT64"}]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session_id,
+                "tableName": "proj1.dataset1.table1",
+                "schema": [{"name": "id", "type": "INT64"}]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session_id,
-        "tableName": "proj1.dataset2.table2",
-        "schema": [{"name": "id", "type": "INT64"}]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session_id,
+                "tableName": "proj1.dataset2.table2",
+                "schema": [{"name": "id", "type": "INT64"}]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session_id,
-        "tableName": "proj2.dataset1.table3",
-        "schema": [{"name": "id", "type": "INT64"}]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session_id,
+                "tableName": "proj2.dataset1.table3",
+                "schema": [{"name": "id", "type": "INT64"}]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let projects = methods.dispatch("bq.getProjects", json!({
-        "sessionId": session_id
-    })).await.unwrap();
+    let projects = methods
+        .dispatch(
+            "bq.getProjects",
+            json!({
+                "sessionId": session_id
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(projects["projects"].as_array().unwrap().len() >= 2);
 
-    let datasets = methods.dispatch("bq.getDatasets", json!({
-        "sessionId": session_id,
-        "project": "proj1"
-    })).await.unwrap();
+    let datasets = methods
+        .dispatch(
+            "bq.getDatasets",
+            json!({
+                "sessionId": session_id,
+                "project": "proj1"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(datasets["datasets"].as_array().unwrap().len() >= 2);
 
-    let tables = methods.dispatch("bq.getTablesInDataset", json!({
-        "sessionId": session_id,
-        "project": "proj1",
-        "dataset": "dataset1"
-    })).await.unwrap();
+    let tables = methods
+        .dispatch(
+            "bq.getTablesInDataset",
+            json!({
+                "sessionId": session_id,
+                "project": "proj1",
+                "dataset": "dataset1"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(tables["tables"].is_array());
 }
@@ -424,39 +595,75 @@ async fn test_multiple_sessions_independence() {
     let session1 = create_session(&methods).await;
     let session2 = create_session(&methods).await;
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session1,
-        "tableName": "shared_name",
-        "schema": [{"name": "val", "type": "INT64"}]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session1,
+                "tableName": "shared_name",
+                "schema": [{"name": "val", "type": "INT64"}]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.insert", json!({
-        "sessionId": session1,
-        "tableName": "shared_name",
-        "rows": [[100]]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.insert",
+            json!({
+                "sessionId": session1,
+                "tableName": "shared_name",
+                "rows": [[100]]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session2,
-        "tableName": "shared_name",
-        "schema": [{"name": "val", "type": "INT64"}]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session2,
+                "tableName": "shared_name",
+                "schema": [{"name": "val", "type": "INT64"}]
+            }),
+        )
+        .await
+        .unwrap();
 
-    methods.dispatch("bq.insert", json!({
-        "sessionId": session2,
-        "tableName": "shared_name",
-        "rows": [[200]]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.insert",
+            json!({
+                "sessionId": session2,
+                "tableName": "shared_name",
+                "rows": [[200]]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let result1 = methods.dispatch("bq.query", json!({
-        "sessionId": session1,
-        "sql": "SELECT val FROM shared_name"
-    })).await.unwrap();
+    let result1 = methods
+        .dispatch(
+            "bq.query",
+            json!({
+                "sessionId": session1,
+                "sql": "SELECT val FROM shared_name"
+            }),
+        )
+        .await
+        .unwrap();
 
-    let result2 = methods.dispatch("bq.query", json!({
-        "sessionId": session2,
-        "sql": "SELECT val FROM shared_name"
-    })).await.unwrap();
+    let result2 = methods
+        .dispatch(
+            "bq.query",
+            json!({
+                "sessionId": session2,
+                "sql": "SELECT val FROM shared_name"
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(result1["rows"].is_array());
     assert!(result2["rows"].is_array());
@@ -468,20 +675,32 @@ async fn test_insert_with_array_and_object_rows() {
     let methods = create_rpc_methods();
     let session_id = create_session(&methods).await;
 
-    methods.dispatch("bq.createTable", json!({
-        "sessionId": session_id,
-        "tableName": "insert_test",
-        "schema": [
-            {"name": "id", "type": "INT64"},
-            {"name": "val", "type": "STRING"}
-        ]
-    })).await.unwrap();
+    methods
+        .dispatch(
+            "bq.createTable",
+            json!({
+                "sessionId": session_id,
+                "tableName": "insert_test",
+                "schema": [
+                    {"name": "id", "type": "INT64"},
+                    {"name": "val", "type": "STRING"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
 
-    let insert_result = methods.dispatch("bq.insert", json!({
-        "sessionId": session_id,
-        "tableName": "insert_test",
-        "rows": [[1, "a"], [2, "b"]]
-    })).await.unwrap();
+    let insert_result = methods
+        .dispatch(
+            "bq.insert",
+            json!({
+                "sessionId": session_id,
+                "tableName": "insert_test",
+                "rows": [[1, "a"], [2, "b"]]
+            }),
+        )
+        .await
+        .unwrap();
 
     assert!(insert_result["insertedRows"].is_number());
 }
