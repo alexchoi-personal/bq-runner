@@ -7,8 +7,8 @@ use yachtsql::{AsyncQueryExecutor, Table};
 
 use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_json};
 use super::ExecutorBackend;
+use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
-use crate::rpc::types::ColumnDef;
 
 #[derive(Clone)]
 pub struct YachtSqlExecutor {
@@ -415,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_parquet_file_not_found() {
         let executor = YachtSqlExecutor::new();
-        let schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let schema = vec![crate::domain::ColumnDef::int64("id")];
         let result = executor
             .load_parquet("test_table", "/nonexistent/file.parquet", &schema)
             .await;
@@ -449,8 +449,8 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::int64("id"),
-            crate::rpc::types::ColumnDef::string("name"),
+            crate::domain::ColumnDef::int64("id"),
+            crate::domain::ColumnDef::string("name"),
         ];
 
         let rows = executor
@@ -491,7 +491,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
 
         let rows = executor
             .load_parquet("nulls_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -550,19 +550,19 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::bool("bool_col"),
-            crate::rpc::types::ColumnDef::int64("i8_col"),
-            crate::rpc::types::ColumnDef::int64("i16_col"),
-            crate::rpc::types::ColumnDef::int64("i32_col"),
-            crate::rpc::types::ColumnDef::int64("i64_col"),
-            crate::rpc::types::ColumnDef::int64("u8_col"),
-            crate::rpc::types::ColumnDef::int64("u16_col"),
-            crate::rpc::types::ColumnDef::int64("u32_col"),
-            crate::rpc::types::ColumnDef::int64("u64_col"),
-            crate::rpc::types::ColumnDef::float64("f32_col"),
-            crate::rpc::types::ColumnDef::float64("f64_col"),
-            crate::rpc::types::ColumnDef::string("str_col"),
-            crate::rpc::types::ColumnDef::string("large_str_col"),
+            crate::domain::ColumnDef::bool("bool_col"),
+            crate::domain::ColumnDef::int64("i8_col"),
+            crate::domain::ColumnDef::int64("i16_col"),
+            crate::domain::ColumnDef::int64("i32_col"),
+            crate::domain::ColumnDef::int64("i64_col"),
+            crate::domain::ColumnDef::int64("u8_col"),
+            crate::domain::ColumnDef::int64("u16_col"),
+            crate::domain::ColumnDef::int64("u32_col"),
+            crate::domain::ColumnDef::int64("u64_col"),
+            crate::domain::ColumnDef::float64("f32_col"),
+            crate::domain::ColumnDef::float64("f64_col"),
+            crate::domain::ColumnDef::string("str_col"),
+            crate::domain::ColumnDef::string("large_str_col"),
         ];
 
         let rows = executor
@@ -604,10 +604,10 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::date("date32_col"),
-            crate::rpc::types::ColumnDef::date("date64_col"),
-            crate::rpc::types::ColumnDef::date("i64_date"),
-            crate::rpc::types::ColumnDef::timestamp("i64_ts"),
+            crate::domain::ColumnDef::date("date32_col"),
+            crate::domain::ColumnDef::date("date64_col"),
+            crate::domain::ColumnDef::date("i64_date"),
+            crate::domain::ColumnDef::timestamp("i64_ts"),
         ];
 
         let rows = executor
@@ -665,10 +665,10 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::timestamp("ts_s"),
-            crate::rpc::types::ColumnDef::timestamp("ts_ms"),
-            crate::rpc::types::ColumnDef::timestamp("ts_us"),
-            crate::rpc::types::ColumnDef::timestamp("ts_ns"),
+            crate::domain::ColumnDef::timestamp("ts_s"),
+            crate::domain::ColumnDef::timestamp("ts_ms"),
+            crate::domain::ColumnDef::timestamp("ts_us"),
+            crate::domain::ColumnDef::timestamp("ts_ns"),
         ];
 
         let rows = executor
@@ -707,7 +707,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::string("text")];
+        let col_schema = vec![crate::domain::ColumnDef::string("text")];
 
         let rows = executor
             .load_parquet("quotes_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -950,7 +950,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
 
         let rows = executor
             .load_parquet("empty_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -968,7 +968,7 @@ mod tests {
         let invalid_path = temp_dir.path().join("invalid.parquet");
         std::fs::write(&invalid_path, b"not a parquet file").unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
         let result = executor
             .load_parquet("invalid_test", invalid_path.to_str().unwrap(), &col_schema)
             .await;

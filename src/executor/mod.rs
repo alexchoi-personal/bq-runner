@@ -4,7 +4,7 @@ mod yachtsql;
 
 pub use self::bigquery::BigQueryExecutor;
 pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
-pub use crate::rpc::types::ColumnDef;
+pub use crate::domain::ColumnDef;
 
 use async_trait::async_trait;
 use crate::error::Result;
@@ -96,7 +96,7 @@ impl Executor {
         &self,
         table_name: &str,
         path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
+        schema: &[ColumnDef],
     ) -> Result<u64> {
         self.backend().load_parquet(table_name, path, schema).await
     }

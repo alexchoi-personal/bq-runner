@@ -1,6 +1,6 @@
 use super::*;
 use crate::executor::{QueryResult, YachtSqlExecutor};
-use crate::rpc::types::ColumnDef;
+use crate::domain::ColumnDef;
 use dependency::extract_cte_names;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};

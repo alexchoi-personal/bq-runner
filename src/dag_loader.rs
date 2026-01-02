@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::rpc::types::ColumnDef;
+use crate::domain::ColumnDef;
 
 #[derive(Debug, Clone)]
 pub struct SqlFile {

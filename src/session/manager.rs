@@ -188,7 +188,7 @@ impl SessionManager {
         session_id: Uuid,
         table_name: &str,
         path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
+        schema: &[crate::domain::ColumnDef],
     ) -> Result<u64> {
         let executor = self.get_executor(session_id)?;
         executor.load_parquet(table_name, path, schema).await
@@ -536,27 +536,27 @@ mod tests {
         let session_id = manager.create_session().await.unwrap();
 
         let bq_schema = vec![
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "id".to_string(),
                 column_type: "INT64".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "name".to_string(),
                 column_type: "STRING".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "score".to_string(),
                 column_type: "FLOAT64".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "active".to_string(),
                 column_type: "BOOL".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "created_date".to_string(),
                 column_type: "DATE".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "updated_at".to_string(),
                 column_type: "TIMESTAMP".to_string(),
             },
