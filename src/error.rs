@@ -19,6 +19,12 @@ pub enum Error {
 
     #[error("Loader error: {0}")]
     Loader(String),
+
+    #[error("BigQuery error: {0}")]
+    BigQuery(String),
+
+    #[error("BigQuery job {job_id} timed out after {elapsed_secs} seconds")]
+    Timeout { job_id: String, elapsed_secs: u64 },
 }
 
 impl Error {
@@ -30,6 +36,8 @@ impl Error {
             Error::InvalidRequest(_) => -32600,
             Error::Internal(_) => -32603,
             Error::Loader(_) => -32001,
+            Error::BigQuery(_) => -32003,
+            Error::Timeout { .. } => -32004,
         }
     }
 
@@ -43,6 +51,7 @@ impl Error {
             Error::Executor(msg) => Error::Executor(format!("{} {}", context, msg)),
             Error::Internal(msg) => Error::Internal(format!("{} {}", context, msg)),
             Error::Loader(msg) => Error::Loader(format!("{} {}", context, msg)),
+            Error::BigQuery(msg) => Error::BigQuery(format!("{} {}", context, msg)),
             other => other,
         }
     }
