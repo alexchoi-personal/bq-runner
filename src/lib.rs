@@ -5,6 +5,7 @@ pub mod loader;
 pub mod rpc;
 pub mod session;
 pub mod utils;
+pub mod validation;
 
 pub use domain::{ColumnDef, TableDef, TableInfo};
 pub use error::{Error, Result};
