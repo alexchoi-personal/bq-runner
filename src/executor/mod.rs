@@ -6,7 +6,15 @@ pub use self::bigquery::BigQueryExecutor;
 pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
 pub use crate::rpc::types::ColumnDef;
 
+use async_trait::async_trait;
 use crate::error::Result;
+
+#[async_trait]
+pub trait ExecutorBackend: Send + Sync {
+    async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
+    async fn execute_statement(&self, sql: &str) -> Result<u64>;
+    async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef]) -> Result<u64>;
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExecutorMode {
@@ -21,6 +29,13 @@ pub enum Executor {
 }
 
 impl Executor {
+    fn backend(&self) -> &dyn ExecutorBackend {
+        match self {
+            Executor::Mock(e) => e,
+            Executor::BigQuery(e) => e,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn mock() -> Result<Self> {
         Ok(Self::Mock(YachtSqlExecutor::new()))
@@ -45,32 +60,20 @@ impl Executor {
 
     #[allow(dead_code)]
     pub async fn query(&self, sql: &str) -> Result<QueryResult> {
-        match self {
-            Executor::Mock(e) => e.execute_query(sql).await,
-            Executor::BigQuery(e) => e.execute_query(sql).await,
-        }
+        self.backend().execute_query(sql).await
     }
 
     #[allow(dead_code)]
     pub async fn execute(&self, sql: &str) -> Result<u64> {
-        match self {
-            Executor::Mock(e) => e.execute_statement(sql).await,
-            Executor::BigQuery(e) => e.execute_statement(sql).await,
-        }
+        self.backend().execute_statement(sql).await
     }
 
     pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        match self {
-            Executor::Mock(e) => e.execute_query(sql).await,
-            Executor::BigQuery(e) => e.execute_query(sql).await,
-        }
+        self.backend().execute_query(sql).await
     }
 
     pub async fn execute_statement(&self, sql: &str) -> Result<u64> {
-        match self {
-            Executor::Mock(e) => e.execute_statement(sql).await,
-            Executor::BigQuery(e) => e.execute_statement(sql).await,
-        }
+        self.backend().execute_statement(sql).await
     }
 
     pub async fn load_parquet(
@@ -79,10 +82,7 @@ impl Executor {
         path: &str,
         schema: &[crate::rpc::types::ColumnDef],
     ) -> Result<u64> {
-        match self {
-            Executor::Mock(e) => e.load_parquet(table_name, path, schema).await,
-            Executor::BigQuery(e) => e.load_parquet(table_name, path, schema).await,
-        }
+        self.backend().load_parquet(table_name, path, schema).await
     }
 
     pub async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
