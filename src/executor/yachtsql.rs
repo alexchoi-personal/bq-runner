@@ -1,11 +1,27 @@
 use std::fs::File;
 
+use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
 use yachtsql::{AsyncQueryExecutor, Table};
 
 use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_json};
+use super::{ExecutorBackend, ExecutorMode};
+use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+
+pub trait MockExecutorExt {
+    fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
+    fn describe_table(
+        &self,
+        table_name: &str,
+    ) -> impl std::future::Future<Output = Result<(Vec<(String, String)>, u64)>> + Send;
+    fn set_default_project(&self, project: Option<String>);
+    fn get_default_project(&self) -> Option<String>;
+    fn get_projects(&self) -> Vec<String>;
+    fn get_datasets(&self, project: &str) -> Vec<String>;
+    fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Vec<String>;
+}
 
 #[derive(Clone)]
 pub struct YachtSqlExecutor {
@@ -39,11 +55,11 @@ impl YachtSqlExecutor {
         Ok(result.row_count() as u64)
     }
 
-    pub async fn load_parquet(
+    async fn load_parquet_impl(
         &self,
         table_name: &str,
         path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
+        schema: &[ColumnDef],
     ) -> Result<u64> {
         let file = File::open(path)
             .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
@@ -114,8 +130,52 @@ impl YachtSqlExecutor {
 
         Ok(total_rows)
     }
+}
 
-    pub async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
+impl Default for YachtSqlExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ExecutorBackend for YachtSqlExecutor {
+    fn mode(&self) -> ExecutorMode {
+        ExecutorMode::Mock
+    }
+
+    async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
+        let result = self
+            .executor
+            .execute_sql(sql)
+            .await
+            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
+
+        table_to_query_result(&result)
+    }
+
+    async fn execute_statement(&self, sql: &str) -> Result<u64> {
+        let result = self
+            .executor
+            .execute_sql(sql)
+            .await
+            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
+
+        Ok(result.row_count() as u64)
+    }
+
+    async fn load_parquet(
+        &self,
+        table_name: &str,
+        path: &str,
+        schema: &[ColumnDef],
+    ) -> Result<u64> {
+        self.load_parquet_impl(table_name, path, schema).await
+    }
+}
+
+impl MockExecutorExt for YachtSqlExecutor {
+    async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
         let result = self.execute_query(
             "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = 'public'"
         ).await?;
@@ -133,7 +193,7 @@ impl YachtSqlExecutor {
         Ok(tables)
     }
 
-    pub async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
+    async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
         let schema_sql = format!(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
             table_name
@@ -162,32 +222,26 @@ impl YachtSqlExecutor {
         Ok((schema, row_count))
     }
 
-    pub fn set_default_project(&self, project: Option<String>) {
+    fn set_default_project(&self, project: Option<String>) {
         self.executor.catalog().set_default_project(project);
     }
 
-    pub fn get_default_project(&self) -> Option<String> {
+    fn get_default_project(&self) -> Option<String> {
         self.executor.catalog().get_default_project()
     }
 
-    pub fn get_projects(&self) -> Vec<String> {
+    fn get_projects(&self) -> Vec<String> {
         self.executor.catalog().get_projects()
     }
 
-    pub fn get_datasets(&self, project: &str) -> Vec<String> {
+    fn get_datasets(&self, project: &str) -> Vec<String> {
         self.executor.catalog().get_datasets(project)
     }
 
-    pub fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Vec<String> {
+    fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Vec<String> {
         self.executor
             .catalog()
             .get_tables_in_dataset(project, dataset)
-    }
-}
-
-impl Default for YachtSqlExecutor {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -380,7 +434,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_parquet_file_not_found() {
         let executor = YachtSqlExecutor::new();
-        let schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let schema = vec![crate::domain::ColumnDef::int64("id")];
         let result = executor
             .load_parquet("test_table", "/nonexistent/file.parquet", &schema)
             .await;
@@ -414,8 +468,8 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::int64("id"),
-            crate::rpc::types::ColumnDef::string("name"),
+            crate::domain::ColumnDef::int64("id"),
+            crate::domain::ColumnDef::string("name"),
         ];
 
         let rows = executor
@@ -456,7 +510,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
 
         let rows = executor
             .load_parquet("nulls_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -515,19 +569,19 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::bool("bool_col"),
-            crate::rpc::types::ColumnDef::int64("i8_col"),
-            crate::rpc::types::ColumnDef::int64("i16_col"),
-            crate::rpc::types::ColumnDef::int64("i32_col"),
-            crate::rpc::types::ColumnDef::int64("i64_col"),
-            crate::rpc::types::ColumnDef::int64("u8_col"),
-            crate::rpc::types::ColumnDef::int64("u16_col"),
-            crate::rpc::types::ColumnDef::int64("u32_col"),
-            crate::rpc::types::ColumnDef::int64("u64_col"),
-            crate::rpc::types::ColumnDef::float64("f32_col"),
-            crate::rpc::types::ColumnDef::float64("f64_col"),
-            crate::rpc::types::ColumnDef::string("str_col"),
-            crate::rpc::types::ColumnDef::string("large_str_col"),
+            crate::domain::ColumnDef::bool("bool_col"),
+            crate::domain::ColumnDef::int64("i8_col"),
+            crate::domain::ColumnDef::int64("i16_col"),
+            crate::domain::ColumnDef::int64("i32_col"),
+            crate::domain::ColumnDef::int64("i64_col"),
+            crate::domain::ColumnDef::int64("u8_col"),
+            crate::domain::ColumnDef::int64("u16_col"),
+            crate::domain::ColumnDef::int64("u32_col"),
+            crate::domain::ColumnDef::int64("u64_col"),
+            crate::domain::ColumnDef::float64("f32_col"),
+            crate::domain::ColumnDef::float64("f64_col"),
+            crate::domain::ColumnDef::string("str_col"),
+            crate::domain::ColumnDef::string("large_str_col"),
         ];
 
         let rows = executor
@@ -569,10 +623,10 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::date("date32_col"),
-            crate::rpc::types::ColumnDef::date("date64_col"),
-            crate::rpc::types::ColumnDef::date("i64_date"),
-            crate::rpc::types::ColumnDef::timestamp("i64_ts"),
+            crate::domain::ColumnDef::date("date32_col"),
+            crate::domain::ColumnDef::date("date64_col"),
+            crate::domain::ColumnDef::date("i64_date"),
+            crate::domain::ColumnDef::timestamp("i64_ts"),
         ];
 
         let rows = executor
@@ -630,10 +684,10 @@ mod tests {
         writer.close().unwrap();
 
         let col_schema = vec![
-            crate::rpc::types::ColumnDef::timestamp("ts_s"),
-            crate::rpc::types::ColumnDef::timestamp("ts_ms"),
-            crate::rpc::types::ColumnDef::timestamp("ts_us"),
-            crate::rpc::types::ColumnDef::timestamp("ts_ns"),
+            crate::domain::ColumnDef::timestamp("ts_s"),
+            crate::domain::ColumnDef::timestamp("ts_ms"),
+            crate::domain::ColumnDef::timestamp("ts_us"),
+            crate::domain::ColumnDef::timestamp("ts_ns"),
         ];
 
         let rows = executor
@@ -672,7 +726,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::string("text")];
+        let col_schema = vec![crate::domain::ColumnDef::string("text")];
 
         let rows = executor
             .load_parquet("quotes_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -915,7 +969,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
 
         let rows = executor
             .load_parquet("empty_test", parquet_path.to_str().unwrap(), &col_schema)
@@ -933,7 +987,7 @@ mod tests {
         let invalid_path = temp_dir.path().join("invalid.parquet");
         std::fs::write(&invalid_path, b"not a parquet file").unwrap();
 
-        let col_schema = vec![crate::rpc::types::ColumnDef::int64("id")];
+        let col_schema = vec![crate::domain::ColumnDef::int64("id")];
         let result = executor
             .load_parquet("invalid_test", invalid_path.to_str().unwrap(), &col_schema)
             .await;

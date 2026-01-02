@@ -3,14 +3,13 @@ mod execution;
 mod types;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread;
 
 use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 use crate::error::{Error, Result};
-use crate::executor::{Executor, ExecutorMode};
+use crate::executor::{ExecutorBackend, ExecutorMode};
 use crate::rpc::types::{DagTableDef, DagTableDetail, DagTableInfo};
 
 pub use types::{PipelineResult, PipelineTable, TableError};
@@ -32,68 +31,47 @@ impl Pipeline {
     }
 
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
-        let mut infos = Vec::new();
+        let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
 
         for def in defs {
             let is_source = def.sql.is_none();
-            let dependencies = if is_source {
-                vec![]
-            } else {
-                extract_dependencies(def.sql.as_deref().unwrap_or(""), &self.tables)
-            };
-
             let table = PipelineTable {
                 name: def.name.clone(),
                 sql: def.sql,
                 schema: def.schema,
                 rows: def.rows,
-                dependencies: dependencies.clone(),
+                dependencies: vec![],
                 is_source,
             };
-
-            infos.push(DagTableInfo {
-                name: table.name.clone(),
-                dependencies: dependencies.clone(),
-            });
-
             self.tables.insert(table.name.clone(), table);
         }
 
-        let updates: Vec<(String, Vec<String>)> = self
-            .tables
-            .iter()
-            .filter_map(|(name, table)| {
+        for name in &new_names {
+            if let Some(table) = self.tables.get(name) {
                 if let Some(sql) = &table.sql {
                     let deps = extract_dependencies(sql, &self.tables);
-                    if deps != table.dependencies {
-                        Some((name.clone(), deps))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+                    let table = self.tables.get_mut(name).unwrap();
+                    table.dependencies = deps;
                 }
+            }
+        }
+
+        let infos = new_names
+            .iter()
+            .filter_map(|name| {
+                self.tables.get(name).map(|table| DagTableInfo {
+                    name: table.name.clone(),
+                    dependencies: table.dependencies.clone(),
+                })
             })
             .collect();
-
-        for (name, deps) in updates {
-            if let Some(t) = self.tables.get_mut(&name) {
-                t.dependencies = deps;
-            }
-        }
-
-        for info in &mut infos {
-            if let Some(table) = self.tables.get(&info.name) {
-                info.dependencies = table.dependencies.clone();
-            }
-        }
 
         Ok(infos)
     }
 
     pub fn run(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<dyn ExecutorBackend>,
         targets: Option<Vec<String>>,
     ) -> Result<PipelineResult> {
         let subset = if let Some(targets) = targets {
@@ -107,7 +85,7 @@ impl Pipeline {
 
     pub fn retry_failed(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<dyn ExecutorBackend>,
         previous_result: &PipelineResult,
     ) -> Result<PipelineResult> {
         let subset: HashSet<String> = previous_result
@@ -122,7 +100,7 @@ impl Pipeline {
 
     fn run_subset(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<dyn ExecutorBackend>,
         tables: HashSet<String>,
     ) -> Result<PipelineResult> {
         if tables.is_empty() {
@@ -132,8 +110,7 @@ impl Pipeline {
         match executor.mode() {
             ExecutorMode::Mock => {
                 let levels = self.topological_sort_levels(&tables)?;
-                #[allow(clippy::needless_borrow)]
-                self.run_in_serial(&executor, levels)
+                self.run_in_serial(executor.as_ref(), levels)
             }
             ExecutorMode::BigQuery => self.run_via_streaming(executor, tables),
         }
@@ -141,7 +118,7 @@ impl Pipeline {
 
     fn run_in_serial(
         &self,
-        executor: &Executor,
+        executor: &dyn ExecutorBackend,
         levels: Vec<Vec<String>>,
     ) -> Result<PipelineResult> {
         let mut result = PipelineResult::default();
@@ -173,7 +150,7 @@ impl Pipeline {
 
     fn run_via_streaming(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<dyn ExecutorBackend>,
         subset: HashSet<String>,
     ) -> Result<PipelineResult> {
         let all_tables: Vec<String> = subset.into_iter().collect();
@@ -208,7 +185,8 @@ impl Pipeline {
             max_concurrency,
         }));
 
-        let (tx, rx) = mpsc::channel::<(String, Result<()>)>();
+        let handle = tokio::runtime::Handle::current();
+        let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
         self.spawn_ready_tables(&executor, &state, &tx);
 
@@ -216,9 +194,9 @@ impl Pipeline {
         let mut processed = 0;
 
         while processed < total_count {
-            let (name, outcome) = match rx.recv() {
-                Ok(msg) => msg,
-                Err(_) => break,
+            let (name, outcome) = match handle.block_on(rx.recv()) {
+                Some(msg) => msg,
+                None => break,
             };
 
             processed += 1;
@@ -267,7 +245,7 @@ impl Pipeline {
 
     fn spawn_ready_tables(
         &self,
-        executor: &Arc<Executor>,
+        executor: &Arc<dyn ExecutorBackend>,
         state: &Arc<Mutex<StreamState>>,
         tx: &mpsc::Sender<(String, Result<()>)>,
     ) {
@@ -289,13 +267,15 @@ impl Pipeline {
             let table = self.tables.get(&name).cloned();
             let tx = tx.clone();
 
-            thread::spawn(move || {
+            tokio::spawn(async move {
                 let res = if let Some(table) = table {
-                    execute_table(&executor, &table)
+                    tokio::task::spawn_blocking(move || execute_table(executor.as_ref(), &table))
+                        .await
+                        .unwrap_or_else(|e| Err(Error::Internal(format!("Task join error: {}", e))))
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
-                let _ = tx.send((name, res));
+                let _ = tx.send((name, res)).await;
             });
         }
     }
@@ -333,7 +313,7 @@ impl Pipeline {
         Ok(needed)
     }
 
-    fn execute_single_table(&self, executor: &Executor, name: &str) -> Result<()> {
+    fn execute_single_table(&self, executor: &dyn ExecutorBackend, name: &str) -> Result<()> {
         let table = self
             .tables
             .get(name)
@@ -412,11 +392,10 @@ impl Pipeline {
             .collect()
     }
 
-    pub fn clear(&mut self, executor: &Executor) {
-        let handle = tokio::runtime::Handle::current();
+    pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
         for table_name in self.tables.keys() {
             let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-            let _ = handle.block_on(executor.execute_statement(&drop_sql));
+            let _ = executor.execute_statement(&drop_sql).await;
         }
         self.tables.clear();
     }
@@ -431,15 +410,15 @@ impl Default for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ColumnDef;
     use crate::executor::{QueryResult, YachtSqlExecutor};
-    use crate::rpc::types::ColumnDef;
     use dependency::extract_cte_names;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::runtime::Runtime;
 
-    fn create_mock_executor() -> Arc<Executor> {
-        Arc::new(Executor::Mock(YachtSqlExecutor::new()))
+    fn create_mock_executor() -> Arc<YachtSqlExecutor> {
+        Arc::new(YachtSqlExecutor::new())
     }
 
     fn test_runtime() -> Runtime {
@@ -451,7 +430,7 @@ mod tests {
         fn execute_statement_sync(&self, sql: &str) -> Result<u64>;
     }
 
-    impl ExecutorTestExt for Arc<Executor> {
+    impl ExecutorTestExt for Arc<YachtSqlExecutor> {
         fn execute_query_sync(&self, sql: &str) -> Result<QueryResult> {
             let rt = test_runtime();
             rt.block_on(self.execute_query(sql))
@@ -466,21 +445,21 @@ mod tests {
     trait PipelineTestExt {
         fn run_sync(
             &self,
-            executor: Arc<Executor>,
+            executor: Arc<YachtSqlExecutor>,
             targets: Option<Vec<String>>,
         ) -> Result<PipelineResult>;
         fn retry_failed_sync(
             &self,
-            executor: Arc<Executor>,
+            executor: Arc<YachtSqlExecutor>,
             prev_result: &PipelineResult,
         ) -> Result<PipelineResult>;
-        fn clear_sync(&mut self, executor: &Arc<Executor>);
+        fn clear_sync(&mut self, executor: &Arc<YachtSqlExecutor>);
     }
 
     impl PipelineTestExt for Pipeline {
         fn run_sync(
             &self,
-            executor: Arc<Executor>,
+            executor: Arc<YachtSqlExecutor>,
             targets: Option<Vec<String>>,
         ) -> Result<PipelineResult> {
             let rt = test_runtime();
@@ -494,7 +473,7 @@ mod tests {
 
         fn retry_failed_sync(
             &self,
-            executor: Arc<Executor>,
+            executor: Arc<YachtSqlExecutor>,
             prev_result: &PipelineResult,
         ) -> Result<PipelineResult> {
             let rt = test_runtime();
@@ -507,21 +486,13 @@ mod tests {
             })
         }
 
-        fn clear_sync(&mut self, executor: &Arc<Executor>) {
+        fn clear_sync(&mut self, executor: &Arc<YachtSqlExecutor>) {
             let rt = test_runtime();
             let exec = executor.clone();
-            let tables: Vec<String> = self.tables.keys().cloned().collect();
-            rt.block_on(async move {
-                tokio::task::spawn_blocking(move || {
-                    let handle = tokio::runtime::Handle::current();
-                    for table_name in tables {
-                        let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-                        let _ = handle.block_on(exec.execute_statement(&drop_sql));
-                    }
-                })
-                .await
-                .unwrap()
-            });
+            for table_name in self.tables.keys() {
+                let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
+                let _ = rt.block_on(exec.execute_statement(&drop_sql));
+            }
             self.tables.clear();
         }
     }

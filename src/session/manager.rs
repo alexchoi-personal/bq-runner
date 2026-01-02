@@ -5,13 +5,15 @@ use parking_lot::RwLock;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
-use crate::executor::{BigQueryExecutor, Executor, ExecutorMode, QueryResult, YachtSqlExecutor};
+use crate::executor::{
+    BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
+};
+use crate::loader;
 use crate::rpc::types::{
     DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
 };
 
 use super::pipeline::{Pipeline, PipelineResult, TableError};
-use crate::dag_loader;
 
 pub struct SessionManager {
     sessions: RwLock<HashMap<Uuid, Session>>,
@@ -19,7 +21,8 @@ pub struct SessionManager {
 }
 
 struct Session {
-    executor: Arc<Executor>,
+    executor: Arc<dyn ExecutorBackend>,
+    mock_executor: Option<Arc<YachtSqlExecutor>>,
     pipeline: Pipeline,
 }
 
@@ -38,16 +41,62 @@ impl SessionManager {
         }
     }
 
+    fn get_executor(&self, session_id: Uuid) -> Result<Arc<dyn ExecutorBackend>> {
+        let sessions = self.sessions.read();
+        let session = sessions
+            .get(&session_id)
+            .ok_or(Error::SessionNotFound(session_id))?;
+        Ok(Arc::clone(&session.executor))
+    }
+
+    fn get_mock_executor(&self, session_id: Uuid) -> Result<Arc<YachtSqlExecutor>> {
+        let sessions = self.sessions.read();
+        let session = sessions
+            .get(&session_id)
+            .ok_or(Error::SessionNotFound(session_id))?;
+        session
+            .mock_executor
+            .clone()
+            .ok_or_else(|| Error::Executor("This operation is only available in mock mode".into()))
+    }
+
+    fn with_session<F, T>(&self, session_id: Uuid, f: F) -> Result<T>
+    where
+        F: FnOnce(&Session) -> Result<T>,
+    {
+        let sessions = self.sessions.read();
+        let session = sessions
+            .get(&session_id)
+            .ok_or(Error::SessionNotFound(session_id))?;
+        f(session)
+    }
+
+    fn with_session_mut<F, T>(&self, session_id: Uuid, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Session) -> Result<T>,
+    {
+        let mut sessions = self.sessions.write();
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or(Error::SessionNotFound(session_id))?;
+        f(session)
+    }
+
     pub async fn create_session(&self) -> Result<Uuid> {
         let session_id = Uuid::new_v4();
-        let executor = match self.mode {
-            ExecutorMode::Mock => Executor::Mock(YachtSqlExecutor::new()),
-            ExecutorMode::BigQuery => Executor::BigQuery(BigQueryExecutor::new().await?),
-        };
+        let (executor, mock_executor): (Arc<dyn ExecutorBackend>, Option<Arc<YachtSqlExecutor>>) =
+            match self.mode {
+                ExecutorMode::Mock => {
+                    let mock = Arc::new(YachtSqlExecutor::new());
+                    (Arc::clone(&mock) as Arc<dyn ExecutorBackend>, Some(mock))
+                }
+                ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
+            };
         let pipeline = Pipeline::new();
 
         let session = Session {
-            executor: Arc::new(executor),
+            executor,
+            mock_executor,
             pipeline,
         };
 
@@ -66,24 +115,12 @@ impl SessionManager {
     }
 
     pub async fn execute_query(&self, session_id: Uuid, sql: &str) -> Result<QueryResult> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
+        let executor = self.get_executor(session_id)?;
         executor.execute_query(sql).await
     }
 
     pub async fn execute_statement(&self, session_id: Uuid, sql: &str) -> Result<u64> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
+        let executor = self.get_executor(session_id)?;
         executor.execute_statement(sql).await
     }
 
@@ -92,11 +129,7 @@ impl SessionManager {
         session_id: Uuid,
         tables: Vec<DagTableDef>,
     ) -> Result<Vec<DagTableInfo>> {
-        let mut sessions = self.sessions.write();
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
-        session.pipeline.register(tables)
+        self.with_session_mut(session_id, |session| session.pipeline.register(tables))
     }
 
     pub fn run_dag(
@@ -105,30 +138,27 @@ impl SessionManager {
         targets: Option<Vec<String>>,
         retry_count: u32,
     ) -> Result<PipelineResult> {
-        let sessions = self.sessions.read();
-        let session = sessions
-            .get(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
+        self.with_session(session_id, |session| {
+            let mut result = session
+                .pipeline
+                .run(Arc::clone(&session.executor), targets)?;
 
-        let mut result = session
-            .pipeline
-            .run(Arc::clone(&session.executor), targets)?;
+            for _ in 0..retry_count {
+                if result.all_succeeded() {
+                    break;
+                }
 
-        for _ in 0..retry_count {
-            if result.all_succeeded() {
-                break;
+                let retry_result = session
+                    .pipeline
+                    .retry_failed(Arc::clone(&session.executor), &result)?;
+
+                result.succeeded.extend(retry_result.succeeded);
+                result.failed = retry_result.failed;
+                result.skipped = retry_result.skipped;
             }
 
-            let retry_result = session
-                .pipeline
-                .retry_failed(Arc::clone(&session.executor), &result)?;
-
-            result.succeeded.extend(retry_result.succeeded);
-            result.failed = retry_result.failed;
-            result.skipped = retry_result.skipped;
-        }
-
-        Ok(result)
+            Ok(result)
+        })
     }
 
     pub fn retry_dag(
@@ -137,42 +167,41 @@ impl SessionManager {
         failed_tables: Vec<String>,
         skipped_tables: Vec<String>,
     ) -> Result<PipelineResult> {
-        let sessions = self.sessions.read();
-        let session = sessions
-            .get(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
+        self.with_session(session_id, |session| {
+            let previous_result = PipelineResult {
+                succeeded: vec![],
+                failed: failed_tables
+                    .into_iter()
+                    .map(|t| TableError {
+                        table: t,
+                        error: String::new(),
+                    })
+                    .collect(),
+                skipped: skipped_tables,
+            };
 
-        let previous_result = PipelineResult {
-            succeeded: vec![],
-            failed: failed_tables
-                .into_iter()
-                .map(|t| TableError {
-                    table: t,
-                    error: String::new(),
-                })
-                .collect(),
-            skipped: skipped_tables,
-        };
-
-        session
-            .pipeline
-            .retry_failed(Arc::clone(&session.executor), &previous_result)
+            session
+                .pipeline
+                .retry_failed(Arc::clone(&session.executor), &previous_result)
+        })
     }
 
     pub fn get_dag(&self, session_id: Uuid) -> Result<Vec<DagTableDetail>> {
-        let sessions = self.sessions.read();
-        let session = sessions
-            .get(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
-        Ok(session.pipeline.get_tables())
+        self.with_session(session_id, |session| Ok(session.pipeline.get_tables()))
     }
 
-    pub fn clear_dag(&self, session_id: Uuid) -> Result<()> {
-        let mut sessions = self.sessions.write();
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
-        session.pipeline.clear(&session.executor);
+    pub async fn clear_dag(&self, session_id: Uuid) -> Result<()> {
+        let (executor, mut pipeline) = {
+            let mut sessions = self.sessions.write();
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            (
+                Arc::clone(&session.executor),
+                std::mem::take(&mut session.pipeline),
+            )
+        };
+        pipeline.clear(executor.as_ref()).await;
         Ok(())
     }
 
@@ -181,26 +210,14 @@ impl SessionManager {
         session_id: Uuid,
         table_name: &str,
         path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
+        schema: &[crate::domain::ColumnDef],
     ) -> Result<u64> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
+        let executor = self.get_executor(session_id)?;
         executor.load_parquet(table_name, path, schema).await
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
+        let executor = self.get_mock_executor(session_id)?;
         executor.list_tables().await
     }
 
@@ -209,58 +226,29 @@ impl SessionManager {
         session_id: Uuid,
         table_name: &str,
     ) -> Result<(Vec<(String, String)>, u64)> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
+        let executor = self.get_mock_executor(session_id)?;
         executor.describe_table(table_name).await
     }
 
     pub fn set_default_project(&self, session_id: Uuid, project: Option<String>) -> Result<()> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-        executor.set_default_project(project)
+        let executor = self.get_mock_executor(session_id)?;
+        executor.set_default_project(project);
+        Ok(())
     }
 
     pub fn get_default_project(&self, session_id: Uuid) -> Result<Option<String>> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-        executor.get_default_project()
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_default_project())
     }
 
     pub fn get_projects(&self, session_id: Uuid) -> Result<Vec<String>> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-        executor.get_projects()
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_projects())
     }
 
     pub fn get_datasets(&self, session_id: Uuid, project: &str) -> Result<Vec<String>> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-        executor.get_datasets(project)
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_datasets(project))
     }
 
     pub fn get_tables_in_dataset(
@@ -269,14 +257,8 @@ impl SessionManager {
         project: &str,
         dataset: &str,
     ) -> Result<Vec<String>> {
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-        executor.get_tables_in_dataset(project, dataset)
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_tables_in_dataset(project, dataset))
     }
 
     pub fn load_sql_directory(
@@ -284,7 +266,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<DagTableInfo>, Vec<SqlTableInfo>)> {
-        let sql_files = dag_loader::discover_sql_files(root_path)?;
+        let sql_files = loader::discover_sql_files(root_path)?;
 
         let tables: Vec<DagTableDef> = sql_files
             .iter()
@@ -316,24 +298,16 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = dag_loader::discover_parquet_files(root_path)?;
-
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-
+        let parquet_files = loader::discover_parquet_files(root_path)?;
+        let executor = self.get_executor(session_id)?;
         self.load_parquet_files_parallel(executor, parquet_files)
             .await
     }
 
     async fn load_parquet_files_parallel(
         &self,
-        executor: Arc<Executor>,
-        parquet_files: Vec<dag_loader::ParquetFile>,
+        executor: Arc<dyn ExecutorBackend>,
+        parquet_files: Vec<loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
         let mut handles = Vec::new();
 
@@ -370,16 +344,8 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<ParquetTableInfo>, Vec<SqlTableInfo>, Vec<DagTableInfo>)> {
-        let discovered = dag_loader::discover_files(root_path)?;
-
-        let executor = {
-            let sessions = self.sessions.read();
-            let session = sessions
-                .get(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            Arc::clone(&session.executor)
-        };
-
+        let discovered = loader::discover_files(root_path)?;
+        let executor = self.get_executor(session_id)?;
         let parquet_results = self
             .load_parquet_files_parallel(executor, discovered.parquet_files)
             .await?;
@@ -593,27 +559,27 @@ mod tests {
         let session_id = manager.create_session().await.unwrap();
 
         let bq_schema = vec![
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "id".to_string(),
                 column_type: "INT64".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "name".to_string(),
                 column_type: "STRING".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "score".to_string(),
                 column_type: "FLOAT64".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "active".to_string(),
                 column_type: "BOOL".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "created_date".to_string(),
                 column_type: "DATE".to_string(),
             },
-            crate::rpc::types::ColumnDef {
+            crate::domain::ColumnDef {
                 name: "updated_at".to_string(),
                 column_type: "TIMESTAMP".to_string(),
             },

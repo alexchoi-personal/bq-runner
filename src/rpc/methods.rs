@@ -7,6 +7,31 @@ use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
 
+macro_rules! rpc_method {
+    (session: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
+        async fn $name(&self, params: Value) -> Result<Value> {
+            let $p: $params_type = serde_json::from_value(params)?;
+            let $sid = parse_uuid(&$p.session_id)?;
+            let $sm = &self.session_manager;
+            Ok(json!($body))
+        }
+    };
+    (session_async: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
+        async fn $name(&self, params: Value) -> Result<Value> {
+            let $p: $params_type = serde_json::from_value(params)?;
+            let $sid = parse_uuid(&$p.session_id)?;
+            let $sm = &self.session_manager;
+            Ok(json!($body.await?))
+        }
+    };
+    (no_session: $name:ident, |$sm:ident| $body:expr) => {
+        async fn $name(&self, _params: Value) -> Result<Value> {
+            let $sm = &self.session_manager;
+            Ok(json!($body))
+        }
+    };
+}
+
 use super::types::{
     ClearDagParams, ClearDagResult, ColumnDef, CreateSessionResult, CreateTableParams,
     CreateTableResult, DescribeTableParams, DescribeTableResult, DestroySessionParams,
@@ -57,11 +82,9 @@ impl RpcMethods {
         }
     }
 
-    async fn ping(&self, _params: Value) -> Result<Value> {
-        Ok(json!(PingResult {
-            message: "pong".to_string()
-        }))
-    }
+    rpc_method!(no_session: ping, |_sm| PingResult {
+        message: "pong".to_string()
+    });
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
         let session_id = self.session_manager.create_session().await?;
@@ -71,14 +94,10 @@ impl RpcMethods {
         }))
     }
 
-    async fn destroy_session(&self, params: Value) -> Result<Value> {
-        let p: DestroySessionParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
-
-        self.session_manager.destroy_session(session_id)?;
-
-        Ok(json!(DestroySessionResult { success: true }))
-    }
+    rpc_method!(session: destroy_session, DestroySessionParams, |sm, session_id, _p| {
+        sm.destroy_session(session_id)?;
+        DestroySessionResult { success: true }
+    });
 
     async fn query(&self, params: Value) -> Result<Value> {
         let p: QueryParams = serde_json::from_value(params)?;
@@ -211,20 +230,16 @@ impl RpcMethods {
         }))
     }
 
-    async fn get_dag(&self, params: Value) -> Result<Value> {
-        let p: GetDagParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
-
-        let tables = self.session_manager.get_dag(session_id)?;
-
-        Ok(json!(GetDagResult { tables }))
-    }
+    rpc_method!(session: get_dag, GetDagParams, |sm, session_id, _p| {
+        let tables = sm.get_dag(session_id)?;
+        GetDagResult { tables }
+    });
 
     async fn clear_dag(&self, params: Value) -> Result<Value> {
         let p: ClearDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
-        self.session_manager.clear_dag(session_id)?;
+        self.session_manager.clear_dag(session_id).await?;
 
         Ok(json!(ClearDagResult { success: true }))
     }
@@ -290,43 +305,25 @@ impl RpcMethods {
         Ok(json!(SetDefaultProjectResult { success: true }))
     }
 
-    async fn get_default_project(&self, params: Value) -> Result<Value> {
-        let p: GetDefaultProjectParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
+    rpc_method!(session: get_default_project, GetDefaultProjectParams, |sm, session_id, _p| {
+        let project = sm.get_default_project(session_id)?;
+        GetDefaultProjectResult { project }
+    });
 
-        let project = self.session_manager.get_default_project(session_id)?;
+    rpc_method!(session: get_projects, GetProjectsParams, |sm, session_id, _p| {
+        let projects = sm.get_projects(session_id)?;
+        GetProjectsResult { projects }
+    });
 
-        Ok(json!(GetDefaultProjectResult { project }))
-    }
+    rpc_method!(session: get_datasets, GetDatasetsParams, |sm, session_id, p| {
+        let datasets = sm.get_datasets(session_id, &p.project)?;
+        GetDatasetsResult { datasets }
+    });
 
-    async fn get_projects(&self, params: Value) -> Result<Value> {
-        let p: GetProjectsParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
-
-        let projects = self.session_manager.get_projects(session_id)?;
-
-        Ok(json!(GetProjectsResult { projects }))
-    }
-
-    async fn get_datasets(&self, params: Value) -> Result<Value> {
-        let p: GetDatasetsParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
-
-        let datasets = self.session_manager.get_datasets(session_id, &p.project)?;
-
-        Ok(json!(GetDatasetsResult { datasets }))
-    }
-
-    async fn get_tables_in_dataset(&self, params: Value) -> Result<Value> {
-        let p: GetTablesInDatasetParams = serde_json::from_value(params)?;
-        let session_id = parse_uuid(&p.session_id)?;
-
-        let tables = self
-            .session_manager
-            .get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
-
-        Ok(json!(GetTablesInDatasetResult { tables }))
-    }
+    rpc_method!(session: get_tables_in_dataset, GetTablesInDatasetParams, |sm, session_id, p| {
+        let tables = sm.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
+        GetTablesInDatasetResult { tables }
+    });
 
     async fn load_sql_directory(&self, params: Value) -> Result<Value> {
         let p: LoadSqlDirectoryParams = serde_json::from_value(params)?;

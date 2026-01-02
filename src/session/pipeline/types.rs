@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::rpc::types::ColumnDef;
+use crate::domain::ColumnDef;
 
 #[derive(Debug, Clone)]
 pub struct PipelineTable {
