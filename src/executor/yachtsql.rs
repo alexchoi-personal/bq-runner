@@ -1,11 +1,14 @@
 use std::fs::File;
 
+use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
 use yachtsql::{AsyncQueryExecutor, Table};
 
 use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_json};
+use super::ExecutorBackend;
 use crate::error::{Error, Result};
+use crate::rpc::types::ColumnDef;
 
 #[derive(Clone)]
 pub struct YachtSqlExecutor {
@@ -39,11 +42,11 @@ impl YachtSqlExecutor {
         Ok(result.row_count() as u64)
     }
 
-    pub async fn load_parquet(
+    async fn load_parquet_impl(
         &self,
         table_name: &str,
         path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
+        schema: &[ColumnDef],
     ) -> Result<u64> {
         let file = File::open(path)
             .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
@@ -188,6 +191,38 @@ impl YachtSqlExecutor {
 impl Default for YachtSqlExecutor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl ExecutorBackend for YachtSqlExecutor {
+    async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
+        let result = self
+            .executor
+            .execute_sql(sql)
+            .await
+            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
+
+        table_to_query_result(&result)
+    }
+
+    async fn execute_statement(&self, sql: &str) -> Result<u64> {
+        let result = self
+            .executor
+            .execute_sql(sql)
+            .await
+            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
+
+        Ok(result.row_count() as u64)
+    }
+
+    async fn load_parquet(
+        &self,
+        table_name: &str,
+        path: &str,
+        schema: &[ColumnDef],
+    ) -> Result<u64> {
+        self.load_parquet_impl(table_name, path, schema).await
     }
 }
 

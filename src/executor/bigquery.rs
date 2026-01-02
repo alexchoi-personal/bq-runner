@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use google_cloud_bigquery::client::{Client, ClientConfig};
 use google_cloud_bigquery::http::job::get::GetJobRequest;
 use google_cloud_bigquery::http::job::query::QueryRequest;
@@ -10,11 +11,10 @@ use google_cloud_bigquery::http::table::{
 use google_cloud_bigquery::http::tabledata::list::Value as BqValue;
 use serde_json::Value as JsonValue;
 
+use super::yachtsql::ColumnInfo;
+use super::{ExecutorBackend, QueryResult};
 use crate::error::{Error, Result};
 use crate::rpc::types::ColumnDef;
-
-use super::yachtsql::ColumnInfo;
-use super::QueryResult;
 
 pub struct BigQueryExecutor {
     client: Client,
@@ -49,7 +49,7 @@ impl BigQueryExecutor {
         })
     }
 
-    pub async fn load_parquet(
+    async fn load_parquet_impl(
         &self,
         table_name: &str,
         path: &str,
@@ -147,7 +147,7 @@ impl BigQueryExecutor {
         }
     }
 
-    pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
+    async fn execute_query_impl(&self, sql: &str) -> Result<QueryResult> {
         let request = QueryRequest {
             query: sql.to_string(),
             use_legacy_sql: false,
@@ -194,7 +194,7 @@ impl BigQueryExecutor {
         Ok(QueryResult { columns, rows })
     }
 
-    pub async fn execute_statement(&self, sql: &str) -> Result<u64> {
+    async fn execute_statement_impl(&self, sql: &str) -> Result<u64> {
         let request = QueryRequest {
             query: sql.to_string(),
             use_legacy_sql: false,
@@ -212,6 +212,26 @@ impl BigQueryExecutor {
             })?;
 
         Ok(response.num_dml_affected_rows.unwrap_or(0) as u64)
+    }
+}
+
+#[async_trait]
+impl ExecutorBackend for BigQueryExecutor {
+    async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
+        self.execute_query_impl(sql).await
+    }
+
+    async fn execute_statement(&self, sql: &str) -> Result<u64> {
+        self.execute_statement_impl(sql).await
+    }
+
+    async fn load_parquet(
+        &self,
+        table_name: &str,
+        path: &str,
+        schema: &[ColumnDef],
+    ) -> Result<u64> {
+        self.load_parquet_impl(table_name, path, schema).await
     }
 }
 
