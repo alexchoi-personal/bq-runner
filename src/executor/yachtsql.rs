@@ -10,7 +10,7 @@ use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
 
-pub trait MockExecutorExt {
+pub(crate) trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
     fn describe_table(
         &self,

@@ -3,7 +3,8 @@ pub mod converters;
 mod yachtsql;
 
 pub use self::bigquery::BigQueryExecutor;
-pub use self::yachtsql::{ColumnInfo, MockExecutorExt, QueryResult, YachtSqlExecutor};
+pub(crate) use self::yachtsql::MockExecutorExt;
+pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
 pub use crate::domain::ColumnDef;
 
 use crate::error::Result;
