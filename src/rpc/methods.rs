@@ -31,17 +31,20 @@ fn parse_session_params<T: DeserializeOwned + HasSessionId>(params: Value) -> Re
 }
 
 use super::types::{
-    ClearDagParams, ClearDagResult, ColumnDef, CreateSessionResult, CreateTableParams,
-    CreateTableResult, DescribeTableParams, DescribeTableResult, DestroySessionParams,
-    DestroySessionResult, GetDagParams, GetDagResult, GetDatasetsParams, GetDatasetsResult,
-    GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams, GetProjectsResult,
-    GetTablesInDatasetParams, GetTablesInDatasetResult, InsertParams, InsertResult,
-    ListTablesParams, ListTablesResult, LoadDagFromDirectoryParams, LoadDagFromDirectoryResult,
-    LoadParquetDirectoryParams, LoadParquetDirectoryResult, LoadParquetParams, LoadParquetResult,
-    LoadSqlDirectoryParams, LoadSqlDirectoryResult, PingResult, QueryParams, RegisterDagParams,
-    RegisterDagResult, RetryDagParams, RunDagParams, RunDagResult, SetDefaultProjectParams,
-    SetDefaultProjectResult, TableErrorInfo, TableInfo,
+    ColumnDef, CreateSessionResult, CreateTableParams, CreateTableResult, DescribeTableParams,
+    DescribeTableResult, DestroySessionParams, DestroySessionResult, GetDatasetsParams,
+    GetDatasetsResult, GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams,
+    GetProjectsResult, GetTablesInDatasetParams, GetTablesInDatasetResult, InsertParams,
+    InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult, PingResult, QueryParams,
+    SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
 };
+use super::types::dag::{
+    ClearDagParams, ClearDagResult, GetDagParams, GetDagResult, LoadDagFromDirectoryParams,
+    LoadDagFromDirectoryResult, LoadParquetDirectoryParams, LoadParquetDirectoryResult,
+    LoadSqlDirectoryParams, LoadSqlDirectoryResult, RegisterDagParams, RegisterDagResult,
+    RetryDagParams, RunDagParams, RunDagResult, TableErrorInfo,
+};
+use super::types::query::ListTablesParams as QueryListTablesParams;
 
 impl_has_session_id!(
     DestroySessionParams,
@@ -269,7 +272,7 @@ impl RpcMethods {
     }
 
     async fn list_tables(&self, params: Value) -> Result<Value> {
-        let p: ListTablesParams = serde_json::from_value(params)?;
+        let p: QueryListTablesParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
         let table_infos = self.session_manager.list_tables(session_id).await?;
@@ -711,7 +714,7 @@ mod tests {
     #[test]
     fn test_clear_dag_params_parsing() {
         let params_json = r#"{"sessionId":"abc"}"#;
-        let params: crate::rpc::types::ClearDagParams = serde_json::from_str(params_json).unwrap();
+        let params: crate::rpc::types::dag::ClearDagParams = serde_json::from_str(params_json).unwrap();
         assert_eq!(params.session_id, "abc");
     }
 
