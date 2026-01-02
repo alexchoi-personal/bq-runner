@@ -32,61 +32,40 @@ impl Pipeline {
     }
 
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
-        let mut infos = Vec::new();
+        let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
 
         for def in defs {
             let is_source = def.sql.is_none();
-            let dependencies = if is_source {
-                vec![]
-            } else {
-                extract_dependencies(def.sql.as_deref().unwrap_or(""), &self.tables)
-            };
-
             let table = PipelineTable {
                 name: def.name.clone(),
                 sql: def.sql,
                 schema: def.schema,
                 rows: def.rows,
-                dependencies: dependencies.clone(),
+                dependencies: vec![],
                 is_source,
             };
-
-            infos.push(DagTableInfo {
-                name: table.name.clone(),
-                dependencies: dependencies.clone(),
-            });
-
             self.tables.insert(table.name.clone(), table);
         }
 
-        let updates: Vec<(String, Vec<String>)> = self
-            .tables
-            .iter()
-            .filter_map(|(name, table)| {
+        for name in &new_names {
+            if let Some(table) = self.tables.get(name) {
                 if let Some(sql) = &table.sql {
                     let deps = extract_dependencies(sql, &self.tables);
-                    if deps != table.dependencies {
-                        Some((name.clone(), deps))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+                    let table = self.tables.get_mut(name).unwrap();
+                    table.dependencies = deps;
                 }
+            }
+        }
+
+        let infos = new_names
+            .iter()
+            .filter_map(|name| {
+                self.tables.get(name).map(|table| DagTableInfo {
+                    name: table.name.clone(),
+                    dependencies: table.dependencies.clone(),
+                })
             })
             .collect();
-
-        for (name, deps) in updates {
-            if let Some(t) = self.tables.get_mut(&name) {
-                t.dependencies = deps;
-            }
-        }
-
-        for info in &mut infos {
-            if let Some(table) = self.tables.get(&info.name) {
-                info.dependencies = table.dependencies.clone();
-            }
-        }
 
         Ok(infos)
     }
