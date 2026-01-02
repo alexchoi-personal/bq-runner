@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::query::ColumnDef;
+pub use crate::domain::{
+    DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterDagParams {
@@ -10,27 +11,10 @@ pub struct RegisterDagParams {
     pub tables: Vec<DagTableDef>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DagTableDef {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sql: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<Vec<ColumnDef>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rows: Vec<Value>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct RegisterDagResult {
     pub success: bool,
     pub tables: Vec<DagTableInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DagTableInfo {
-    pub name: String,
-    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,16 +65,6 @@ pub struct GetDagResult {
     pub tables: Vec<DagTableDetail>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DagTableDetail {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sql: Option<String>,
-    #[serde(rename = "isSource")]
-    pub is_source: bool,
-    pub dependencies: Vec<String>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ClearDagParams {
     #[serde(rename = "sessionId")]
@@ -117,14 +91,6 @@ pub struct LoadSqlDirectoryResult {
     pub tables_loaded: Vec<SqlTableInfo>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SqlTableInfo {
-    pub project: String,
-    pub dataset: String,
-    pub table: String,
-    pub path: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct LoadParquetDirectoryParams {
     #[serde(rename = "sessionId")]
@@ -138,16 +104,6 @@ pub struct LoadParquetDirectoryResult {
     pub success: bool,
     #[serde(rename = "tablesLoaded")]
     pub tables_loaded: Vec<ParquetTableInfo>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ParquetTableInfo {
-    pub project: String,
-    pub dataset: String,
-    pub table: String,
-    pub path: String,
-    #[serde(rename = "rowCount")]
-    pub row_count: u64,
 }
 
 #[derive(Debug, Deserialize)]
