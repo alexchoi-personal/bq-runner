@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use google_cloud_bigquery::client::{Client, ClientConfig};
+use google_cloud_bigquery::http::job::cancel::CancelJobRequest;
 use google_cloud_bigquery::http::job::get::GetJobRequest;
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::http::job::{
@@ -47,6 +48,37 @@ impl BigQueryExecutor {
             dataset_id,
             query_timeout_ms,
         })
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<()> {
+        tracing::info!(job_id = %job_id, "Attempting to cancel BigQuery job");
+
+        let request = CancelJobRequest { location: None };
+
+        match self
+            .client
+            .job()
+            .cancel(&self.project_id, job_id, &request)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(job_id = %job_id, "BigQuery job cancelled successfully");
+                Ok(())
+            }
+            Err(e) => {
+                let error_str = e.to_string();
+                if error_str.contains("404") || error_str.contains("notFound") {
+                    tracing::debug!(job_id = %job_id, "Job already completed, nothing to cancel");
+                    Ok(())
+                } else {
+                    tracing::warn!(job_id = %job_id, error = %e, "Failed to cancel BigQuery job");
+                    Err(Error::BigQuery(format!(
+                        "Failed to cancel job {}: {}",
+                        job_id, e
+                    )))
+                }
+            }
+        }
     }
 
     async fn load_parquet_impl(
@@ -117,8 +149,41 @@ impl BigQueryExecutor {
             ));
         }
 
+        let start = std::time::Instant::now();
+        let mut interval = std::time::Duration::from_secs(1);
+        let max_interval = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(1800);
+        let deadline = start + timeout;
+        let mut poll_count = 0u32;
+
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            poll_count += 1;
+            let elapsed = start.elapsed();
+
+            if poll_count % 10 == 0 {
+                tracing::info!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    elapsed_secs = elapsed.as_secs(),
+                    "BigQuery job polling in progress"
+                );
+            }
+
+            if std::time::Instant::now() > deadline {
+                tracing::warn!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    timeout_secs = timeout.as_secs(),
+                    "BigQuery job timed out, attempting cancellation"
+                );
+                if let Err(e) = self.cancel_job(job_id).await {
+                    tracing::warn!(job_id = %job_id, error = %e, "Cancellation failed");
+                }
+                return Err(Error::Timeout {
+                    job_id: job_id.to_string(),
+                    elapsed_secs: timeout.as_secs(),
+                });
+            }
 
             let get_request = GetJobRequest { location: None };
             let status = self
@@ -136,6 +201,13 @@ impl BigQueryExecutor {
                     )));
                 }
 
+                tracing::debug!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    elapsed_secs = elapsed.as_secs(),
+                    "BigQuery job completed"
+                );
+
                 let rows = status
                     .statistics
                     .and_then(|s| s.load)
@@ -144,6 +216,9 @@ impl BigQueryExecutor {
 
                 return Ok(rows);
             }
+
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(max_interval);
         }
     }
 
