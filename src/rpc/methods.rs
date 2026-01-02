@@ -224,7 +224,7 @@ impl RpcMethods {
         let p: ClearDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
-        self.session_manager.clear_dag(session_id)?;
+        self.session_manager.clear_dag(session_id).await?;
 
         Ok(json!(ClearDagResult { success: true }))
     }

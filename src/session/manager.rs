@@ -171,11 +171,16 @@ impl SessionManager {
         self.with_session(session_id, |session| Ok(session.pipeline.get_tables()))
     }
 
-    pub fn clear_dag(&self, session_id: Uuid) -> Result<()> {
-        self.with_session_mut(session_id, |session| {
-            session.pipeline.clear(&session.executor);
-            Ok(())
-        })
+    pub async fn clear_dag(&self, session_id: Uuid) -> Result<()> {
+        let (executor, mut pipeline) = {
+            let mut sessions = self.sessions.write();
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            (Arc::clone(&session.executor), std::mem::take(&mut session.pipeline))
+        };
+        pipeline.clear(&executor).await;
+        Ok(())
     }
 
     pub async fn load_parquet(
