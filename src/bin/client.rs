@@ -3,12 +3,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_id() -> u64 {
     REQUEST_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+fn is_unix_socket(server: &str) -> Option<&str> {
+    if let Some(path) = server.strip_prefix("unix://") {
+        return Some(path);
+    }
+    if server.starts_with('/') || server.starts_with('.') {
+        return Some(server);
+    }
+    None
 }
 
 #[derive(Parser)]
@@ -97,6 +109,37 @@ enum Command {
 }
 
 async fn send_request(server: &str, method: &str, params: Value) -> anyhow::Result<Value> {
+    if let Some(path) = is_unix_socket(server) {
+        return send_request_unix(path, method, params).await;
+    }
+    send_request_ws(server, method, params).await
+}
+
+async fn send_request_unix(path: &str, method: &str, params: Value) -> anyhow::Result<Value> {
+    let stream = UnixStream::connect(path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": next_id()
+    });
+
+    writer.write_all(request.to_string().as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+
+    let mut lines = BufReader::new(reader).lines();
+    if let Some(line) = lines.next_line().await? {
+        let response: Value = serde_json::from_str(&line)?;
+        return Ok(response);
+    }
+
+    anyhow::bail!("No response received")
+}
+
+async fn send_request_ws(server: &str, method: &str, params: Value) -> anyhow::Result<Value> {
     let (ws_stream, _) = connect_async(server).await?;
     let (mut write, mut read) = ws_stream.split();
 

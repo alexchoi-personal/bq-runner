@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -10,6 +11,7 @@ use axum::{
 use clap::{Parser, ValueEnum};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
 use tracing::{error, info, Level};
 use tracing_subscriber::EnvFilter;
 
@@ -37,6 +39,7 @@ impl From<Backend> for ExecutorMode {
 enum Transport {
     Stdio,
     WebSocket { port: u16 },
+    Unix { path: PathBuf },
 }
 
 fn parse_transport(s: &str) -> Result<Transport, String> {
@@ -60,17 +63,29 @@ fn parse_transport(s: &str) -> Result<Transport, String> {
         return Ok(Transport::WebSocket { port });
     }
 
+    if let Some(path) = s.strip_prefix("unix://") {
+        return Ok(Transport::Unix {
+            path: PathBuf::from(path),
+        });
+    }
+
+    if s.starts_with('/') || s.starts_with('.') {
+        return Ok(Transport::Unix {
+            path: PathBuf::from(s),
+        });
+    }
+
     Err(format!(
-        "Invalid transport: {}. Use 'stdio' or 'ws://localhost:<port>'",
+        "Invalid transport: {}. Use 'stdio', 'ws://localhost:<port>', or 'unix:///path/to/socket'",
         s
     ))
 }
 
 #[derive(Parser)]
-#[command(name = "bq-runner")]
-#[command(about = "BigQuery runner with mock and real BigQuery backends")]
+#[command(name = "bq-runner-server")]
+#[command(about = "BigQuery runner server with mock and real BigQuery backends")]
 struct Args {
-    #[arg(long, value_parser = parse_transport, default_value = "ws://localhost:3000", help = "Transport: stdio or ws://localhost:<port>")]
+    #[arg(long, value_parser = parse_transport, default_value = "ws://localhost:3000", help = "Transport: stdio, ws://localhost:<port>, or unix:///path/to/socket")]
     transport: Transport,
 
     #[arg(
@@ -98,21 +113,32 @@ async fn main() -> anyhow::Result<()> {
     match args.transport {
         Transport::Stdio => run_stdio_server(methods).await,
         Transport::WebSocket { port } => {
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    EnvFilter::builder()
-                        .with_default_directive(Level::INFO.into())
-                        .from_env_lossy(),
-                )
-                .init();
-
-            match executor_mode {
-                ExecutorMode::Mock => info!("Starting with mock backend (YachtSQL)"),
-                ExecutorMode::BigQuery => info!("Starting with BigQuery backend"),
-            }
-
+            init_tracing();
+            log_backend(executor_mode);
             run_http_server(port, methods).await
         }
+        Transport::Unix { path } => {
+            init_tracing();
+            log_backend(executor_mode);
+            run_unix_server(&path, methods).await
+        }
+    }
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(Level::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+}
+
+fn log_backend(mode: ExecutorMode) {
+    match mode {
+        ExecutorMode::Mock => info!("Starting with mock backend (YachtSQL)"),
+        ExecutorMode::BigQuery => info!("Starting with BigQuery backend"),
     }
 }
 
@@ -150,6 +176,50 @@ async fn run_stdio_server(methods: Arc<RpcMethods>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>) -> anyhow::Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+
+    let listener = UnixListener::bind(path)?;
+    info!("Listening on unix://{}", path.display());
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let methods = Arc::clone(&methods);
+
+        tokio::spawn(async move {
+            let (reader, mut writer) = stream.into_split();
+            let mut lines = BufReader::new(reader).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                let response = process_message(&line, &methods).await;
+
+                match serde_json::to_string(&response) {
+                    Ok(response_text) => {
+                        if writer.write_all(response_text.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        if writer.write_all(b"\n").await.is_err() {
+                            break;
+                        }
+                        if writer.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to serialize response: {}", e);
+                    }
+                }
+            }
+        });
+    }
 }
 
 async fn run_http_server(port: u16, methods: Arc<RpcMethods>) -> anyhow::Result<()> {
