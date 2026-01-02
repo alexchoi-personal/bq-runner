@@ -12,7 +12,7 @@ use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
 
-pub use types::{PipelineResult, PipelineTable, TableError};
+pub use types::{ExecutionPlan, PipelineResult, PipelineTable, TableError, TableStatus};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
@@ -21,12 +21,31 @@ use execution::execute_table;
 #[derive(Clone)]
 pub struct Pipeline {
     tables: HashMap<String, PipelineTable>,
+    table_status: HashMap<String, TableStatus>,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
         Self {
             tables: HashMap::new(),
+            table_status: HashMap::new(),
+        }
+    }
+
+    pub fn get_table_status(&self, name: &str) -> TableStatus {
+        self.table_status
+            .get(name)
+            .copied()
+            .unwrap_or(TableStatus::Pending)
+    }
+
+    pub fn set_table_status(&mut self, name: &str, status: TableStatus) {
+        self.table_status.insert(name.to_string(), status);
+    }
+
+    pub fn reset_all_status(&mut self) {
+        for name in self.tables.keys() {
+            self.table_status.insert(name.clone(), TableStatus::Pending);
         }
     }
 
@@ -44,6 +63,8 @@ impl Pipeline {
                 is_source,
             };
             self.tables.insert(table.name.clone(), table);
+            self.table_status
+                .insert(def.name.clone(), TableStatus::Pending);
         }
 
         for name in &new_names {
@@ -56,6 +77,8 @@ impl Pipeline {
             }
         }
 
+        self.detect_cycles(&new_names)?;
+
         let infos = new_names
             .iter()
             .filter_map(|name| {
@@ -67,6 +90,49 @@ impl Pipeline {
             .collect();
 
         Ok(infos)
+    }
+
+    fn detect_cycles(&self, new_names: &[String]) -> Result<()> {
+        for start_name in new_names {
+            let mut visited: HashSet<String> = HashSet::new();
+            let mut stack: HashSet<String> = HashSet::new();
+
+            if self.has_cycle_from(start_name, &mut visited, &mut stack) {
+                return Err(Error::InvalidRequest(format!(
+                    "Cycle detected involving table: {}",
+                    start_name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn has_cycle_from(
+        &self,
+        name: &str,
+        visited: &mut HashSet<String>,
+        stack: &mut HashSet<String>,
+    ) -> bool {
+        if stack.contains(name) {
+            return true;
+        }
+        if visited.contains(name) {
+            return false;
+        }
+
+        visited.insert(name.to_string());
+        stack.insert(name.to_string());
+
+        if let Some(table) = self.tables.get(name) {
+            for dep in &table.dependencies {
+                if self.has_cycle_from(dep, visited, stack) {
+                    return true;
+                }
+            }
+        }
+
+        stack.remove(name);
+        false
     }
 
     pub async fn run(
@@ -385,12 +451,43 @@ impl Pipeline {
             .collect()
     }
 
+    pub fn build_execution_plan(
+        &self,
+        targets: Option<Vec<String>>,
+        force: bool,
+    ) -> Result<ExecutionPlan> {
+        let subset = if let Some(targets) = targets {
+            self.get_tables_with_deps_set(&targets)?
+        } else {
+            self.tables.keys().cloned().collect()
+        };
+
+        let filtered: HashSet<String> = if force {
+            subset
+        } else {
+            subset
+                .into_iter()
+                .filter(|name| self.get_table_status(name) != TableStatus::Succeeded)
+                .collect()
+        };
+
+        let levels = self.topological_sort_levels(&filtered)?;
+
+        let tables: Vec<PipelineTable> = filtered
+            .iter()
+            .filter_map(|name| self.tables.get(name).cloned())
+            .collect();
+
+        Ok(ExecutionPlan { tables, levels })
+    }
+
     pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
         for table_name in self.tables.keys() {
             let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
             let _ = executor.execute_statement(&drop_sql).await;
         }
         self.tables.clear();
+        self.table_status.clear();
     }
 }
 

@@ -4,6 +4,15 @@ use serde_json::Value;
 
 use crate::domain::ColumnDef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableStatus {
+    #[default]
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
+
 #[derive(Debug, Clone)]
 pub struct PipelineTable {
     pub name: String,
@@ -31,6 +40,12 @@ impl PipelineResult {
     pub fn all_succeeded(&self) -> bool {
         self.failed.is_empty() && self.skipped.is_empty()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionPlan {
+    pub tables: Vec<PipelineTable>,
+    pub levels: Vec<Vec<String>>,
 }
 
 pub(super) const DEFAULT_MAX_CONCURRENCY: usize = 8;
