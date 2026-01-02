@@ -1,35 +1,12 @@
 use std::sync::Arc;
 
+use bq_runner_macros::rpc;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
-
-macro_rules! rpc {
-    (fn $name:ident() -> $ret:ty $body:block) => {
-        async fn $name(&self, _params: Value) -> Result<Value> {
-            Ok(json!($body))
-        }
-    };
-    (fn $name:ident($p:ident: $params_type:ty) -> $ret:ty |$sm:ident, $sid:ident| $body:expr) => {
-        async fn $name(&self, params: Value) -> Result<Value> {
-            let $p: $params_type = serde_json::from_value(params)?;
-            let $sid = parse_uuid(&$p.session_id)?;
-            let $sm = &self.session_manager;
-            Ok(json!($body))
-        }
-    };
-    (async fn $name:ident($p:ident: $params_type:ty) -> $ret:ty |$sm:ident, $sid:ident| $body:expr) => {
-        async fn $name(&self, params: Value) -> Result<Value> {
-            let $p: $params_type = serde_json::from_value(params)?;
-            let $sid = parse_uuid(&$p.session_id)?;
-            let $sm = &self.session_manager;
-            Ok(json!($body))
-        }
-    };
-}
 
 use super::types::{
     ClearDagParams, ClearDagResult, ColumnDef, CreateSessionResult, CreateTableParams,
@@ -81,9 +58,10 @@ impl RpcMethods {
         }
     }
 
-    rpc!(fn ping() -> PingResult {
+    #[rpc]
+    fn ping() -> PingResult {
         PingResult { message: "pong".to_string() }
-    });
+    }
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
         let session_id = self.session_manager.create_session().await?;
@@ -93,10 +71,11 @@ impl RpcMethods {
         }))
     }
 
-    rpc!(fn destroy_session(p: DestroySessionParams) -> DestroySessionResult |sm, session_id| {
+    #[rpc(session)]
+    fn destroy_session(p: DestroySessionParams) -> DestroySessionResult {
         sm.destroy_session(session_id)?;
         DestroySessionResult { success: true }
-    });
+    }
 
     async fn query(&self, params: Value) -> Result<Value> {
         let p: QueryParams = serde_json::from_value(params)?;
@@ -229,10 +208,11 @@ impl RpcMethods {
         }))
     }
 
-    rpc!(fn get_dag(p: GetDagParams) -> GetDagResult |sm, session_id| {
+    #[rpc(session)]
+    fn get_dag(p: GetDagParams) -> GetDagResult {
         let tables = sm.get_dag(session_id)?;
         GetDagResult { tables }
-    });
+    }
 
     async fn clear_dag(&self, params: Value) -> Result<Value> {
         let p: ClearDagParams = serde_json::from_value(params)?;
@@ -301,25 +281,29 @@ impl RpcMethods {
         Ok(json!(SetDefaultProjectResult { success: true }))
     }
 
-    rpc!(fn get_default_project(p: GetDefaultProjectParams) -> GetDefaultProjectResult |sm, session_id| {
+    #[rpc(session)]
+    fn get_default_project(p: GetDefaultProjectParams) -> GetDefaultProjectResult {
         let project = sm.get_default_project(session_id)?;
         GetDefaultProjectResult { project }
-    });
+    }
 
-    rpc!(fn get_projects(p: GetProjectsParams) -> GetProjectsResult |sm, session_id| {
+    #[rpc(session)]
+    fn get_projects(p: GetProjectsParams) -> GetProjectsResult {
         let projects = sm.get_projects(session_id)?;
         GetProjectsResult { projects }
-    });
+    }
 
-    rpc!(fn get_datasets(p: GetDatasetsParams) -> GetDatasetsResult |sm, session_id| {
+    #[rpc(session)]
+    fn get_datasets(p: GetDatasetsParams) -> GetDatasetsResult {
         let datasets = sm.get_datasets(session_id, &p.project)?;
         GetDatasetsResult { datasets }
-    });
+    }
 
-    rpc!(fn get_tables_in_dataset(p: GetTablesInDatasetParams) -> GetTablesInDatasetResult |sm, session_id| {
+    #[rpc(session)]
+    fn get_tables_in_dataset(p: GetTablesInDatasetParams) -> GetTablesInDatasetResult {
         let tables = sm.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
         GetTablesInDatasetResult { tables }
-    });
+    }
 
     async fn load_sql_directory(&self, params: Value) -> Result<Value> {
         let p: LoadSqlDirectoryParams = serde_json::from_value(params)?;
