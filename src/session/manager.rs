@@ -135,57 +135,6 @@ impl SessionManager {
         self.with_session_mut(session_id, |session| session.pipeline.register(tables))
     }
 
-    pub fn define_table(
-        &self,
-        session_id: Uuid,
-        name: &str,
-        sql: &str,
-    ) -> Result<Vec<String>> {
-        self.with_session_mut(session_id, |session| session.pipeline.define_table(name, sql))
-    }
-
-    pub async fn drop_table(&self, session_id: Uuid, name: &str) -> Result<()> {
-        let (executor, mut pipeline) = {
-            let mut sessions = self.sessions.write();
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            (
-                Arc::clone(&session.executor),
-                std::mem::take(&mut session.pipeline),
-            )
-        };
-        let result = pipeline.drop_table(executor.as_ref(), name).await;
-        {
-            let mut sessions = self.sessions.write();
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.pipeline = pipeline;
-            }
-        }
-        result
-    }
-
-    pub async fn drop_all_tables(&self, session_id: Uuid) -> Result<()> {
-        let (executor, mut pipeline) = {
-            let mut sessions = self.sessions.write();
-            let session = sessions
-                .get_mut(&session_id)
-                .ok_or(Error::SessionNotFound(session_id))?;
-            (
-                Arc::clone(&session.executor),
-                std::mem::take(&mut session.pipeline),
-            )
-        };
-        pipeline.drop_all_tables(executor.as_ref()).await;
-        {
-            let mut sessions = self.sessions.write();
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.pipeline = pipeline;
-            }
-        }
-        Ok(())
-    }
-
     pub async fn run_dag(
         &self,
         session_id: Uuid,
