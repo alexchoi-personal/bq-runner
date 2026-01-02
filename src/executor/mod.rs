@@ -43,6 +43,22 @@ impl Executor {
         matches!(self, Executor::Mock(_))
     }
 
+    pub fn as_mock(&self) -> Option<&YachtSqlExecutor> {
+        match self {
+            Executor::Mock(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn require_mock(&self) -> Result<&YachtSqlExecutor> {
+        match self {
+            Executor::Mock(e) => Ok(e),
+            _ => Err(crate::error::Error::Executor(
+                "This operation is only available in mock mode".into(),
+            )),
+        }
+    }
+
     #[allow(dead_code)]
     pub async fn query(&self, sql: &str) -> Result<QueryResult> {
         match self {
@@ -86,69 +102,32 @@ impl Executor {
     }
 
     pub async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
-        match self {
-            Executor::Mock(e) => e.list_tables().await,
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "list_tables not supported for BigQuery executor".to_string(),
-            )),
-        }
+        self.require_mock()?.list_tables().await
     }
 
     pub async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
-        match self {
-            Executor::Mock(e) => e.describe_table(table_name).await,
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "describe_table not supported for BigQuery executor".to_string(),
-            )),
-        }
+        self.require_mock()?.describe_table(table_name).await
     }
 
     pub fn set_default_project(&self, project: Option<String>) -> Result<()> {
-        match self {
-            Executor::Mock(e) => {
-                e.set_default_project(project);
-                Ok(())
-            }
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "set_default_project not supported for BigQuery executor".to_string(),
-            )),
-        }
+        self.require_mock()?.set_default_project(project);
+        Ok(())
     }
 
     pub fn get_default_project(&self) -> Result<Option<String>> {
-        match self {
-            Executor::Mock(e) => Ok(e.get_default_project()),
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "get_default_project not supported for BigQuery executor".to_string(),
-            )),
-        }
+        Ok(self.require_mock()?.get_default_project())
     }
 
     pub fn get_projects(&self) -> Result<Vec<String>> {
-        match self {
-            Executor::Mock(e) => Ok(e.get_projects()),
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "get_projects not supported for BigQuery executor".to_string(),
-            )),
-        }
+        Ok(self.require_mock()?.get_projects())
     }
 
     pub fn get_datasets(&self, project: &str) -> Result<Vec<String>> {
-        match self {
-            Executor::Mock(e) => Ok(e.get_datasets(project)),
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "get_datasets not supported for BigQuery executor".to_string(),
-            )),
-        }
+        Ok(self.require_mock()?.get_datasets(project))
     }
 
     pub fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Result<Vec<String>> {
-        match self {
-            Executor::Mock(e) => Ok(e.get_tables_in_dataset(project, dataset)),
-            Executor::BigQuery(_) => Err(crate::error::Error::Executor(
-                "get_tables_in_dataset not supported for BigQuery executor".to_string(),
-            )),
-        }
+        Ok(self.require_mock()?.get_tables_in_dataset(project, dataset))
     }
 }
 
