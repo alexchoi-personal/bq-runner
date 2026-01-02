@@ -1,12 +1,12 @@
 use serde_json::Value;
 
 use crate::error::{Error, Result};
-use crate::executor::Executor;
+use crate::executor::ExecutorBackend;
 use crate::utils::json_to_sql_value;
 
 use super::types::PipelineTable;
 
-pub fn execute_table(executor: &Executor, table: &PipelineTable) -> Result<()> {
+pub fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
 
     if table.is_source {
@@ -51,7 +51,7 @@ pub fn execute_table(executor: &Executor, table: &PipelineTable) -> Result<()> {
     Ok(())
 }
 
-fn create_source_table_standalone(executor: &Executor, table: &PipelineTable) -> Result<()> {
+fn create_source_table_standalone(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
 
     if let Some(schema) = &table.schema {
