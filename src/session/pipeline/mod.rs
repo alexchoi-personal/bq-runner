@@ -8,9 +8,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
-use crate::rpc::types::{DagTableDef, DagTableDetail, DagTableInfo};
 
 pub use types::{PipelineResult, PipelineTable, TableError};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};

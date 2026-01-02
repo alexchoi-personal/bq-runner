@@ -4,14 +4,12 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use uuid::Uuid;
 
+use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
 use crate::loader;
-use crate::rpc::types::{
-    DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
-};
 
 use super::pipeline::{Pipeline, PipelineResult, TableError};
 
@@ -645,13 +643,13 @@ mod tests {
             }
 
             let tables = vec![
-                crate::rpc::types::DagTableDef {
+                DagTableDef {
                     name: "sum_table".to_string(),
                     sql: Some("SELECT SUM(v) AS total FROM base".to_string()),
                     schema: None,
                     rows: vec![],
                 },
-                crate::rpc::types::DagTableDef {
+                DagTableDef {
                     name: "count_table".to_string(),
                     sql: Some("SELECT COUNT(*) AS cnt FROM base".to_string()),
                     schema: None,
@@ -771,7 +769,7 @@ mod tests {
         manager
             .register_dag(
                 s1,
-                vec![crate::rpc::types::DagTableDef {
+                vec![DagTableDef {
                     name: "result".to_string(),
                     sql: Some("SELECT v * 2 AS doubled FROM data".to_string()),
                     schema: None,
@@ -783,7 +781,7 @@ mod tests {
         manager
             .register_dag(
                 s2,
-                vec![crate::rpc::types::DagTableDef {
+                vec![DagTableDef {
                     name: "result".to_string(),
                     sql: Some("SELECT v * 3 AS tripled FROM data".to_string()),
                     schema: None,
@@ -845,19 +843,19 @@ mod tests {
                 .unwrap();
 
             let tables = vec![
-                crate::rpc::types::DagTableDef {
+                DagTableDef {
                     name: "step1".to_string(),
                     sql: Some("SELECT n * 2 AS n FROM source".to_string()),
                     schema: None,
                     rows: vec![],
                 },
-                crate::rpc::types::DagTableDef {
+                DagTableDef {
                     name: "step2".to_string(),
                     sql: Some("SELECT n + 10 AS n FROM step1".to_string()),
                     schema: None,
                     rows: vec![],
                 },
-                crate::rpc::types::DagTableDef {
+                DagTableDef {
                     name: "step3".to_string(),
                     sql: Some("SELECT n * n AS n FROM step2".to_string()),
                     schema: None,
@@ -937,8 +935,8 @@ mod tests {
             .await
             .unwrap();
 
-        let tables: Vec<crate::rpc::types::DagTableDef> = (0..5)
-            .map(|i| crate::rpc::types::DagTableDef {
+        let tables: Vec<DagTableDef> = (0..5)
+            .map(|i| DagTableDef {
                 name: format!("branch_{}", i),
                 sql: Some(format!("SELECT v + {} AS v FROM root", i)),
                 schema: None,

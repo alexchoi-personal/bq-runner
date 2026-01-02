@@ -81,6 +81,51 @@ pub struct TableInfo {
     pub row_count: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DagTableDef {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Vec<ColumnDef>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DagTableInfo {
+    pub name: String,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DagTableDetail {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    #[serde(rename = "isSource")]
+    pub is_source: bool,
+    pub dependencies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SqlTableInfo {
+    pub project: String,
+    pub dataset: String,
+    pub table: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ParquetTableInfo {
+    pub project: String,
+    pub dataset: String,
+    pub table: String,
+    pub path: String,
+    #[serde(rename = "rowCount")]
+    pub row_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
