@@ -1,8 +1,7 @@
 use async_trait::async_trait;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
-use super::{ColumnDef, ColumnInfo, ExecutorBackend, ExecutorMode, QueryResult};
+use super::{ColumnDef, ExecutorBackend, ExecutorMode, QueryResult};
 use crate::error::Result;
 
 pub struct TestCountingExecutor<F>
@@ -10,7 +9,7 @@ where
     F: Fn(&str) + Send + Sync,
 {
     callback: F,
-    inner: Arc<Mutex<super::YachtSqlExecutor>>,
+    inner: Arc<super::YachtSqlExecutor>,
 }
 
 impl<F> TestCountingExecutor<F>
@@ -20,7 +19,7 @@ where
     pub fn new(callback: F) -> Self {
         Self {
             callback,
-            inner: Arc::new(Mutex::new(super::YachtSqlExecutor::new())),
+            inner: Arc::new(super::YachtSqlExecutor::new()),
         }
     }
 }
@@ -35,9 +34,7 @@ where
     }
 
     async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        let inner = self.inner.lock();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(inner.execute_query(sql))
+        self.inner.execute_query(sql).await
     }
 
     async fn execute_statement(&self, sql: &str) -> Result<u64> {
@@ -51,9 +48,7 @@ where
             }
         }
 
-        let inner = self.inner.lock();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(inner.execute_statement(sql))
+        self.inner.execute_statement(sql).await
     }
 
     async fn load_parquet(
@@ -63,9 +58,7 @@ where
         schema: &[ColumnDef],
     ) -> Result<u64> {
         (self.callback)(table_name);
-        let inner = self.inner.lock();
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(inner.load_parquet(table_name, path, schema))
+        self.inner.load_parquet(table_name, path, schema).await
     }
 }
 

@@ -130,58 +130,66 @@ impl SessionManager {
         self.with_session_mut(session_id, |session| session.pipeline.register(tables))
     }
 
-    pub fn run_dag(
+    pub async fn run_dag(
         &self,
         session_id: Uuid,
         targets: Option<Vec<String>>,
         retry_count: u32,
     ) -> Result<PipelineResult> {
-        self.with_session(session_id, |session| {
-            let mut result = session
-                .pipeline
-                .run(Arc::clone(&session.executor), targets)?;
+        let (pipeline, executor) = {
+            let sessions = self.sessions.read();
+            let session = sessions
+                .get(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            (session.pipeline.clone(), Arc::clone(&session.executor))
+        };
 
-            for _ in 0..retry_count {
-                if result.all_succeeded() {
-                    break;
-                }
+        let mut result = pipeline.run(Arc::clone(&executor), targets).await?;
 
-                let retry_result = session
-                    .pipeline
-                    .retry_failed(Arc::clone(&session.executor), &result)?;
-
-                result.succeeded.extend(retry_result.succeeded);
-                result.failed = retry_result.failed;
-                result.skipped = retry_result.skipped;
+        for _ in 0..retry_count {
+            if result.all_succeeded() {
+                break;
             }
 
-            Ok(result)
-        })
+            let retry_result = pipeline
+                .retry_failed(Arc::clone(&executor), &result)
+                .await?;
+
+            result.succeeded.extend(retry_result.succeeded);
+            result.failed = retry_result.failed;
+            result.skipped = retry_result.skipped;
+        }
+
+        Ok(result)
     }
 
-    pub fn retry_dag(
+    pub async fn retry_dag(
         &self,
         session_id: Uuid,
         failed_tables: Vec<String>,
         skipped_tables: Vec<String>,
     ) -> Result<PipelineResult> {
-        self.with_session(session_id, |session| {
-            let previous_result = PipelineResult {
-                succeeded: vec![],
-                failed: failed_tables
-                    .into_iter()
-                    .map(|t| TableError {
-                        table: t,
-                        error: String::new(),
-                    })
-                    .collect(),
-                skipped: skipped_tables,
-            };
+        let (pipeline, executor) = {
+            let sessions = self.sessions.read();
+            let session = sessions
+                .get(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            (session.pipeline.clone(), Arc::clone(&session.executor))
+        };
 
-            session
-                .pipeline
-                .retry_failed(Arc::clone(&session.executor), &previous_result)
-        })
+        let previous_result = PipelineResult {
+            succeeded: vec![],
+            failed: failed_tables
+                .into_iter()
+                .map(|t| TableError {
+                    table: t,
+                    error: String::new(),
+                })
+                .collect(),
+            skipped: skipped_tables,
+        };
+
+        pipeline.retry_failed(executor, &previous_result).await
     }
 
     pub fn get_dag(&self, session_id: Uuid) -> Result<Vec<DagTableDetail>> {
@@ -385,16 +393,6 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    async fn run_blocking_test<F, T>(f: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        tokio::task::spawn_blocking(f)
-            .await
-            .map_err(|e| Error::Internal(format!("Task join error: {e}")))?
-    }
 
     #[tokio::test]
     async fn test_create_session() {
@@ -673,7 +671,7 @@ mod tests {
             .into_iter()
             .map(|session_id| {
                 let manager = Arc::clone(&manager);
-                std::thread::spawn(move || {
+                tokio::spawn(async move {
                     let prev = CONCURRENT_EXECUTIONS.fetch_add(1, Ordering::SeqCst);
                     let current = prev + 1;
 
@@ -690,7 +688,7 @@ mod tests {
                         }
                     }
 
-                    let result = manager.run_dag(session_id, None, 0);
+                    let result = manager.run_dag(session_id, None, 0).await;
 
                     CONCURRENT_EXECUTIONS.fetch_sub(1, Ordering::SeqCst);
 
@@ -701,7 +699,7 @@ mod tests {
 
         let mut results = Vec::new();
         for handle in handles {
-            results.push(handle.join().unwrap());
+            results.push(handle.await.unwrap());
         }
 
         let elapsed = start.elapsed();
@@ -793,11 +791,11 @@ mod tests {
         let manager1 = Arc::clone(&manager);
         let manager2 = Arc::clone(&manager);
 
-        let handle1 = std::thread::spawn(move || manager1.run_dag(s1, None, 0));
-        let handle2 = std::thread::spawn(move || manager2.run_dag(s2, None, 0));
+        let handle1 = tokio::spawn(async move { manager1.run_dag(s1, None, 0).await });
+        let handle2 = tokio::spawn(async move { manager2.run_dag(s2, None, 0).await });
 
-        let result1 = handle1.join().unwrap().unwrap();
-        let result2 = handle2.join().unwrap().unwrap();
+        let result1 = handle1.await.unwrap().unwrap();
+        let result2 = handle2.await.unwrap().unwrap();
 
         assert_eq!(result1.succeeded, vec!["result"]);
         assert_eq!(result2.succeeded, vec!["result"]);
@@ -871,8 +869,8 @@ mod tests {
             .into_iter()
             .map(|(session_id, base_value)| {
                 let manager = Arc::clone(&manager);
-                std::thread::spawn(move || {
-                    let result = manager.run_dag(session_id, None, 0);
+                tokio::spawn(async move {
+                    let result = manager.run_dag(session_id, None, 0).await;
                     COMPLETED_SESSIONS.fetch_add(1, Ordering::SeqCst);
                     (session_id, base_value, result)
                 })
@@ -881,7 +879,7 @@ mod tests {
 
         let mut results = Vec::new();
         for handle in handles {
-            results.push(handle.join().unwrap());
+            results.push(handle.await.unwrap());
         }
 
         assert_eq!(
@@ -953,10 +951,7 @@ mod tests {
             );
         }
 
-        let m = Arc::clone(&manager);
-        let dag_result = run_blocking_test(move || m.run_dag(session_id, None, 0))
-            .await
-            .unwrap();
+        let dag_result = manager.run_dag(session_id, None, 0).await.unwrap();
 
         assert_eq!(dag_result.succeeded.len(), 5);
 

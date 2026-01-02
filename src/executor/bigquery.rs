@@ -173,7 +173,7 @@ impl BigQueryExecutor {
             poll_count += 1;
             let elapsed = start.elapsed();
 
-            if poll_count % 10 == 0 {
+            if poll_count.is_multiple_of(10) {
                 tracing::info!(
                     job_id = %job_id,
                     poll_count = poll_count,

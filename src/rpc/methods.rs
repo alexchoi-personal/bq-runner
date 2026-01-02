@@ -183,10 +183,11 @@ impl RpcMethods {
         let session_id = parse_uuid(&p.session_id)?;
         let targets = p.table_names;
         let retry_count = p.retry_count;
-        let session_manager = Arc::clone(&self.session_manager);
 
-        let result =
-            run_blocking(move || session_manager.run_dag(session_id, targets, retry_count)).await?;
+        let result = self
+            .session_manager
+            .run_dag(session_id, targets, retry_count)
+            .await?;
 
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
@@ -208,12 +209,11 @@ impl RpcMethods {
         let session_id = parse_uuid(&p.session_id)?;
         let failed_tables = p.failed_tables;
         let skipped_tables = p.skipped_tables;
-        let session_manager = Arc::clone(&self.session_manager);
 
-        let result = run_blocking(move || {
-            session_manager.retry_dag(session_id, failed_tables, skipped_tables)
-        })
-        .await?;
+        let result = self
+            .session_manager
+            .retry_dag(session_id, failed_tables, skipped_tables)
+            .await?;
 
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
@@ -371,16 +371,6 @@ impl RpcMethods {
 
 fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|_| Error::InvalidRequest(format!("Invalid session ID: {}", s)))
-}
-
-async fn run_blocking<F, T>(f: F) -> Result<T>
-where
-    F: FnOnce() -> Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| Error::Internal(format!("Task join error: {e}")))?
 }
 
 #[cfg(test)]
