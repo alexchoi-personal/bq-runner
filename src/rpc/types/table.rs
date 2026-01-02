@@ -117,3 +117,211 @@ pub struct LoadDirectoryResult {
     pub success: bool,
     pub tables: Vec<LoadedTableInfo>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_pagination_params_default() {
+        let params: PaginationParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(params.limit, 100);
+        assert_eq!(params.offset, 0);
+    }
+
+    #[test]
+    fn test_pagination_params_custom() {
+        let params: PaginationParams = serde_json::from_value(json!({
+            "limit": 50,
+            "offset": 10
+        }))
+        .unwrap();
+        assert_eq!(params.limit, 50);
+        assert_eq!(params.offset, 10);
+    }
+
+    #[test]
+    fn test_health_result_serialize() {
+        let result = HealthResult {
+            status: "healthy".to_string(),
+            session_count: 5,
+            uptime_seconds: 3600,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["session_count"], 5);
+        assert_eq!(json["uptime_seconds"], 3600);
+    }
+
+    #[test]
+    fn test_define_table_params_deserialize() {
+        let params: DefineTableParams = serde_json::from_value(json!({
+            "sessionId": "abc-123",
+            "name": "my_table",
+            "sql": "SELECT 1"
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "abc-123");
+        assert_eq!(params.name, "my_table");
+        assert_eq!(params.sql, "SELECT 1");
+    }
+
+    #[test]
+    fn test_define_table_result_serialize() {
+        let result = DefineTableResult {
+            success: true,
+            dependencies: vec!["table1".to_string(), "table2".to_string()],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["dependencies"], json!(["table1", "table2"]));
+    }
+
+    #[test]
+    fn test_table_definition_deserialize() {
+        let def: TableDefinition = serde_json::from_value(json!({
+            "name": "orders",
+            "sql": "SELECT * FROM users"
+        }))
+        .unwrap();
+        assert_eq!(def.name, "orders");
+        assert_eq!(def.sql, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_define_tables_params_deserialize() {
+        let params: DefineTablesParams = serde_json::from_value(json!({
+            "sessionId": "session-1",
+            "tables": [
+                {"name": "t1", "sql": "SELECT 1"},
+                {"name": "t2", "sql": "SELECT 2"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "session-1");
+        assert_eq!(params.tables.len(), 2);
+    }
+
+    #[test]
+    fn test_execute_params_deserialize() {
+        let params: ExecuteParams = serde_json::from_value(json!({
+            "sessionId": "sess-1",
+            "tables": ["a", "b"],
+            "force": true
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "sess-1");
+        assert_eq!(params.tables, Some(vec!["a".to_string(), "b".to_string()]));
+        assert!(params.force);
+    }
+
+    #[test]
+    fn test_execute_params_optional_fields() {
+        let params: ExecuteParams = serde_json::from_value(json!({
+            "sessionId": "sess-1"
+        }))
+        .unwrap();
+        assert!(params.tables.is_none());
+        assert!(!params.force);
+    }
+
+    #[test]
+    fn test_table_error_serialize() {
+        let err = TableError {
+            table: "bad_table".to_string(),
+            error: "syntax error".to_string(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["table"], "bad_table");
+        assert_eq!(json["error"], "syntax error");
+    }
+
+    #[test]
+    fn test_execute_result_serialize() {
+        let result = ExecuteResult {
+            success: false,
+            succeeded: vec!["a".to_string()],
+            failed: vec![TableError {
+                table: "b".to_string(),
+                error: "failed".to_string(),
+            }],
+            skipped: vec!["c".to_string()],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["succeeded"], json!(["a"]));
+        assert_eq!(json["skipped"], json!(["c"]));
+    }
+
+    #[test]
+    fn test_list_tables_params_deserialize() {
+        let params: ListTablesParams = serde_json::from_value(json!({
+            "sessionId": "s1",
+            "limit": 50,
+            "offset": 10
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "s1");
+        assert_eq!(params.limit, Some(50));
+        assert_eq!(params.offset, Some(10));
+    }
+
+    #[test]
+    fn test_drop_table_params_deserialize() {
+        let params: DropTableParams = serde_json::from_value(json!({
+            "sessionId": "s1",
+            "name": "old_table"
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "s1");
+        assert_eq!(params.name, "old_table");
+    }
+
+    #[test]
+    fn test_drop_all_tables_params_deserialize() {
+        let params: DropAllTablesParams = serde_json::from_value(json!({
+            "sessionId": "s1"
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "s1");
+    }
+
+    #[test]
+    fn test_load_directory_params_deserialize() {
+        let params: LoadDirectoryParams = serde_json::from_value(json!({
+            "sessionId": "s1",
+            "path": "/data/tables"
+        }))
+        .unwrap();
+        assert_eq!(params.session_id, "s1");
+        assert_eq!(params.path, "/data/tables");
+    }
+
+    #[test]
+    fn test_loaded_table_info_serialize() {
+        let info = LoadedTableInfo {
+            name: "users".to_string(),
+            kind: "parquet".to_string(),
+            dependencies: vec![],
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["name"], "users");
+        assert_eq!(json["kind"], "parquet");
+    }
+
+    #[test]
+    fn test_load_directory_result_serialize() {
+        let result = LoadDirectoryResult {
+            success: true,
+            tables: vec![LoadedTableInfo {
+                name: "t1".to_string(),
+                kind: "sql".to_string(),
+                dependencies: vec!["t2".to_string()],
+            }],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["tables"][0]["name"], "t1");
+    }
+}
