@@ -13,8 +13,8 @@ use serde_json::Value as JsonValue;
 
 use super::yachtsql::ColumnInfo;
 use super::{ExecutorBackend, ExecutorMode, QueryResult};
-use crate::error::{Error, Result};
 use crate::domain::ColumnDef;
+use crate::error::{Error, Result};
 
 pub struct BigQueryExecutor {
     client: Client,

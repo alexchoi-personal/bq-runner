@@ -6,8 +6,7 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::executor::{
-    BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult,
-    YachtSqlExecutor,
+    BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
 use crate::loader;
 use crate::rpc::types::{
@@ -55,9 +54,10 @@ impl SessionManager {
         let session = sessions
             .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
-        session.mock_executor.clone().ok_or_else(|| {
-            Error::Executor("This operation is only available in mock mode".into())
-        })
+        session
+            .mock_executor
+            .clone()
+            .ok_or_else(|| Error::Executor("This operation is only available in mock mode".into()))
     }
 
     fn with_session<F, T>(&self, session_id: Uuid, f: F) -> Result<T>
@@ -196,7 +196,10 @@ impl SessionManager {
             let session = sessions
                 .get_mut(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
-            (Arc::clone(&session.executor), std::mem::take(&mut session.pipeline))
+            (
+                Arc::clone(&session.executor),
+                std::mem::take(&mut session.pipeline),
+            )
         };
         pipeline.clear(executor.as_ref()).await;
         Ok(())

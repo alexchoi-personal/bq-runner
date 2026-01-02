@@ -12,7 +12,10 @@ use crate::error::{Error, Result};
 
 pub trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
-    fn describe_table(&self, table_name: &str) -> impl std::future::Future<Output = Result<(Vec<(String, String)>, u64)>> + Send;
+    fn describe_table(
+        &self,
+        table_name: &str,
+    ) -> impl std::future::Future<Output = Result<(Vec<(String, String)>, u64)>> + Send;
     fn set_default_project(&self, project: Option<String>);
     fn get_default_project(&self) -> Option<String>;
     fn get_projects(&self) -> Vec<String>;

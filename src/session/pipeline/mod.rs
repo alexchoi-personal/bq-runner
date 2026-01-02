@@ -271,9 +271,7 @@ impl Pipeline {
                 let res = if let Some(table) = table {
                     tokio::task::spawn_blocking(move || execute_table(executor.as_ref(), &table))
                         .await
-                        .unwrap_or_else(|e| {
-                            Err(Error::Internal(format!("Task join error: {}", e)))
-                        })
+                        .unwrap_or_else(|e| Err(Error::Internal(format!("Task join error: {}", e))))
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
@@ -412,8 +410,8 @@ impl Default for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::{QueryResult, YachtSqlExecutor};
     use crate::domain::ColumnDef;
+    use crate::executor::{QueryResult, YachtSqlExecutor};
     use dependency::extract_cte_names;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};

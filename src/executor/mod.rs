@@ -6,8 +6,8 @@ pub use self::bigquery::BigQueryExecutor;
 pub use self::yachtsql::{ColumnInfo, MockExecutorExt, QueryResult, YachtSqlExecutor};
 pub use crate::domain::ColumnDef;
 
-use async_trait::async_trait;
 use crate::error::Result;
+use async_trait::async_trait;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExecutorMode {
@@ -21,7 +21,8 @@ pub trait ExecutorBackend: Send + Sync {
     fn mode(&self) -> ExecutorMode;
     async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
     async fn execute_statement(&self, sql: &str) -> Result<u64>;
-    async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef]) -> Result<u64>;
+    async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef])
+        -> Result<u64>;
 }
 
 #[cfg(test)]

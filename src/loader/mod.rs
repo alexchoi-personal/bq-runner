@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use glob::glob;
 
-use crate::error::{Error, Result};
 use crate::domain::ColumnDef;
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {

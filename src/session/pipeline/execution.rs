@@ -51,7 +51,10 @@ pub fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> R
     Ok(())
 }
 
-fn create_source_table_standalone(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+fn create_source_table_standalone(
+    executor: &dyn ExecutorBackend,
+    table: &PipelineTable,
+) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
 
     if let Some(schema) = &table.schema {
