@@ -5,7 +5,10 @@ use parking_lot::RwLock;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
-use crate::executor::{BigQueryExecutor, Executor, ExecutorMode, QueryResult, YachtSqlExecutor};
+use crate::executor::{
+    BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult,
+    YachtSqlExecutor,
+};
 use crate::rpc::types::{
     DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
 };
@@ -19,7 +22,8 @@ pub struct SessionManager {
 }
 
 struct Session {
-    executor: Arc<Executor>,
+    executor: Arc<dyn ExecutorBackend>,
+    mock_executor: Option<Arc<YachtSqlExecutor>>,
     pipeline: Pipeline,
 }
 
@@ -38,12 +42,22 @@ impl SessionManager {
         }
     }
 
-    fn get_executor(&self, session_id: Uuid) -> Result<Arc<Executor>> {
+    fn get_executor(&self, session_id: Uuid) -> Result<Arc<dyn ExecutorBackend>> {
         let sessions = self.sessions.read();
         let session = sessions
             .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
         Ok(Arc::clone(&session.executor))
+    }
+
+    fn get_mock_executor(&self, session_id: Uuid) -> Result<Arc<YachtSqlExecutor>> {
+        let sessions = self.sessions.read();
+        let session = sessions
+            .get(&session_id)
+            .ok_or(Error::SessionNotFound(session_id))?;
+        session.mock_executor.clone().ok_or_else(|| {
+            Error::Executor("This operation is only available in mock mode".into())
+        })
     }
 
     fn with_session<F, T>(&self, session_id: Uuid, f: F) -> Result<T>
@@ -70,14 +84,19 @@ impl SessionManager {
 
     pub async fn create_session(&self) -> Result<Uuid> {
         let session_id = Uuid::new_v4();
-        let executor = match self.mode {
-            ExecutorMode::Mock => Executor::Mock(YachtSqlExecutor::new()),
-            ExecutorMode::BigQuery => Executor::BigQuery(BigQueryExecutor::new().await?),
-        };
+        let (executor, mock_executor): (Arc<dyn ExecutorBackend>, Option<Arc<YachtSqlExecutor>>) =
+            match self.mode {
+                ExecutorMode::Mock => {
+                    let mock = Arc::new(YachtSqlExecutor::new());
+                    (Arc::clone(&mock) as Arc<dyn ExecutorBackend>, Some(mock))
+                }
+                ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
+            };
         let pipeline = Pipeline::new();
 
         let session = Session {
-            executor: Arc::new(executor),
+            executor,
+            mock_executor,
             pipeline,
         };
 
@@ -179,7 +198,7 @@ impl SessionManager {
                 .ok_or(Error::SessionNotFound(session_id))?;
             (Arc::clone(&session.executor), std::mem::take(&mut session.pipeline))
         };
-        pipeline.clear(&executor).await;
+        pipeline.clear(executor.as_ref()).await;
         Ok(())
     }
 
@@ -195,7 +214,7 @@ impl SessionManager {
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
-        let executor = self.get_executor(session_id)?;
+        let executor = self.get_mock_executor(session_id)?;
         executor.list_tables().await
     }
 
@@ -204,28 +223,29 @@ impl SessionManager {
         session_id: Uuid,
         table_name: &str,
     ) -> Result<(Vec<(String, String)>, u64)> {
-        let executor = self.get_executor(session_id)?;
+        let executor = self.get_mock_executor(session_id)?;
         executor.describe_table(table_name).await
     }
 
     pub fn set_default_project(&self, session_id: Uuid, project: Option<String>) -> Result<()> {
-        let executor = self.get_executor(session_id)?;
-        executor.set_default_project(project)
+        let executor = self.get_mock_executor(session_id)?;
+        executor.set_default_project(project);
+        Ok(())
     }
 
     pub fn get_default_project(&self, session_id: Uuid) -> Result<Option<String>> {
-        let executor = self.get_executor(session_id)?;
-        executor.get_default_project()
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_default_project())
     }
 
     pub fn get_projects(&self, session_id: Uuid) -> Result<Vec<String>> {
-        let executor = self.get_executor(session_id)?;
-        executor.get_projects()
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_projects())
     }
 
     pub fn get_datasets(&self, session_id: Uuid, project: &str) -> Result<Vec<String>> {
-        let executor = self.get_executor(session_id)?;
-        executor.get_datasets(project)
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_datasets(project))
     }
 
     pub fn get_tables_in_dataset(
@@ -234,8 +254,8 @@ impl SessionManager {
         project: &str,
         dataset: &str,
     ) -> Result<Vec<String>> {
-        let executor = self.get_executor(session_id)?;
-        executor.get_tables_in_dataset(project, dataset)
+        let executor = self.get_mock_executor(session_id)?;
+        Ok(executor.get_tables_in_dataset(project, dataset))
     }
 
     pub fn load_sql_directory(
@@ -283,7 +303,7 @@ impl SessionManager {
 
     async fn load_parquet_files_parallel(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<dyn ExecutorBackend>,
         parquet_files: Vec<dag_loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
         let mut handles = Vec::new();

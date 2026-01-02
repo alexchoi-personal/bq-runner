@@ -12,7 +12,7 @@ use google_cloud_bigquery::http::tabledata::list::Value as BqValue;
 use serde_json::Value as JsonValue;
 
 use super::yachtsql::ColumnInfo;
-use super::{ExecutorBackend, QueryResult};
+use super::{ExecutorBackend, ExecutorMode, QueryResult};
 use crate::error::{Error, Result};
 use crate::rpc::types::ColumnDef;
 
@@ -217,6 +217,10 @@ impl BigQueryExecutor {
 
 #[async_trait]
 impl ExecutorBackend for BigQueryExecutor {
+    fn mode(&self) -> ExecutorMode {
+        ExecutorMode::BigQuery
+    }
+
     async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
         self.execute_query_impl(sql).await
     }

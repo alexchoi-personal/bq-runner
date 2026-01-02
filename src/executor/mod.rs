@@ -3,18 +3,11 @@ pub mod converters;
 mod yachtsql;
 
 pub use self::bigquery::BigQueryExecutor;
-pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
+pub use self::yachtsql::{ColumnInfo, MockExecutorExt, QueryResult, YachtSqlExecutor};
 pub use crate::rpc::types::ColumnDef;
 
 use async_trait::async_trait;
 use crate::error::Result;
-
-#[async_trait]
-pub trait ExecutorBackend: Send + Sync {
-    async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
-    async fn execute_statement(&self, sql: &str) -> Result<u64>;
-    async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef]) -> Result<u64>;
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExecutorMode {
@@ -23,112 +16,12 @@ pub enum ExecutorMode {
     BigQuery,
 }
 
-pub enum Executor {
-    Mock(YachtSqlExecutor),
-    BigQuery(BigQueryExecutor),
-}
-
-impl Executor {
-    fn backend(&self) -> &dyn ExecutorBackend {
-        match self {
-            Executor::Mock(e) => e,
-            Executor::BigQuery(e) => e,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn mock() -> Result<Self> {
-        Ok(Self::Mock(YachtSqlExecutor::new()))
-    }
-
-    #[allow(dead_code)]
-    pub async fn bigquery() -> Result<Self> {
-        Ok(Self::BigQuery(BigQueryExecutor::new().await?))
-    }
-
-    pub fn mode(&self) -> ExecutorMode {
-        match self {
-            Executor::Mock(_) => ExecutorMode::Mock,
-            Executor::BigQuery(_) => ExecutorMode::BigQuery,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn is_mock(&self) -> bool {
-        matches!(self, Executor::Mock(_))
-    }
-
-    pub fn as_mock(&self) -> Option<&YachtSqlExecutor> {
-        match self {
-            Executor::Mock(e) => Some(e),
-            _ => None,
-        }
-    }
-
-    fn require_mock(&self) -> Result<&YachtSqlExecutor> {
-        match self {
-            Executor::Mock(e) => Ok(e),
-            _ => Err(crate::error::Error::Executor(
-                "This operation is only available in mock mode".into(),
-            )),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub async fn query(&self, sql: &str) -> Result<QueryResult> {
-        self.backend().execute_query(sql).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn execute(&self, sql: &str) -> Result<u64> {
-        self.backend().execute_statement(sql).await
-    }
-
-    pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        self.backend().execute_query(sql).await
-    }
-
-    pub async fn execute_statement(&self, sql: &str) -> Result<u64> {
-        self.backend().execute_statement(sql).await
-    }
-
-    pub async fn load_parquet(
-        &self,
-        table_name: &str,
-        path: &str,
-        schema: &[crate::rpc::types::ColumnDef],
-    ) -> Result<u64> {
-        self.backend().load_parquet(table_name, path, schema).await
-    }
-
-    pub async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
-        self.require_mock()?.list_tables().await
-    }
-
-    pub async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
-        self.require_mock()?.describe_table(table_name).await
-    }
-
-    pub fn set_default_project(&self, project: Option<String>) -> Result<()> {
-        self.require_mock()?.set_default_project(project);
-        Ok(())
-    }
-
-    pub fn get_default_project(&self) -> Result<Option<String>> {
-        Ok(self.require_mock()?.get_default_project())
-    }
-
-    pub fn get_projects(&self) -> Result<Vec<String>> {
-        Ok(self.require_mock()?.get_projects())
-    }
-
-    pub fn get_datasets(&self, project: &str) -> Result<Vec<String>> {
-        Ok(self.require_mock()?.get_datasets(project))
-    }
-
-    pub fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Result<Vec<String>> {
-        Ok(self.require_mock()?.get_tables_in_dataset(project, dataset))
-    }
+#[async_trait]
+pub trait ExecutorBackend: Send + Sync {
+    fn mode(&self) -> ExecutorMode;
+    async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
+    async fn execute_statement(&self, sql: &str) -> Result<u64>;
+    async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef]) -> Result<u64>;
 }
 
 #[cfg(test)]
@@ -156,41 +49,42 @@ mod tests {
     }
 
     #[test]
-    fn test_executor_mock_creation() {
-        let executor = Executor::mock().unwrap();
-        assert!(executor.is_mock());
+    fn test_yachtsql_executor_mode() {
+        let executor = YachtSqlExecutor::new();
         assert_eq!(executor.mode(), ExecutorMode::Mock);
     }
 
     #[tokio::test]
-    async fn test_executor_mock_query() {
-        let executor = Executor::mock().unwrap();
-        let result = executor.query("SELECT 1 AS num").await.unwrap();
+    async fn test_yachtsql_executor_query() {
+        let executor = YachtSqlExecutor::new();
+        let result = executor.execute_query("SELECT 1 AS num").await.unwrap();
         assert_eq!(result.rows.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_executor_mock_execute() {
-        let executor = Executor::mock().unwrap();
+    async fn test_yachtsql_executor_execute() {
+        let executor = YachtSqlExecutor::new();
         executor
-            .execute("CREATE TABLE mod_test (id INT64)")
+            .execute_statement("CREATE TABLE mod_test (id INT64)")
             .await
             .unwrap();
-        let count = executor.execute("INSERT INTO mod_test VALUES (1)").await;
+        let count = executor
+            .execute_statement("INSERT INTO mod_test VALUES (1)")
+            .await;
         assert!(count.is_ok());
     }
 
     #[tokio::test]
-    async fn test_executor_mock_execute_query() {
-        let executor = Executor::mock().unwrap();
+    async fn test_yachtsql_executor_execute_query() {
+        let executor = YachtSqlExecutor::new();
         let result = executor.execute_query("SELECT 42 AS val").await.unwrap();
         assert_eq!(result.columns.len(), 1);
         assert_eq!(result.rows.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_executor_mock_execute_statement() {
-        let executor = Executor::mock().unwrap();
+    async fn test_yachtsql_executor_execute_statement() {
+        let executor = YachtSqlExecutor::new();
         executor
             .execute_statement("CREATE TABLE stmt_test (id INT64)")
             .await
@@ -202,13 +96,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_executor_mock_load_parquet() {
+    async fn test_yachtsql_executor_load_parquet() {
         use arrow::array::{Int64Array, StringArray};
         use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
         use parquet::arrow::ArrowWriter;
         use std::sync::Arc;
 
-        let executor = Executor::mock().unwrap();
+        let executor = YachtSqlExecutor::new();
 
         let temp_dir = tempfile::tempdir().unwrap();
         let parquet_path = temp_dir.path().join("mod_test.parquet");
@@ -247,46 +141,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_executor_mock_set_default_project() {
-        let executor = Executor::mock().unwrap();
-        executor
-            .set_default_project(Some("my-project".to_string()))
-            .unwrap();
-        let project = executor.get_default_project().unwrap();
+    async fn test_yachtsql_executor_set_default_project() {
+        let executor = YachtSqlExecutor::new();
+        executor.set_default_project(Some("my-project".to_string()));
+        let project = executor.get_default_project();
         assert!(project.is_some());
     }
 
     #[tokio::test]
-    async fn test_executor_mock_set_default_project_none() {
-        let executor = Executor::mock().unwrap();
-        executor
-            .set_default_project(Some("test".to_string()))
-            .unwrap();
-        executor.set_default_project(None).unwrap();
-        let project = executor.get_default_project().unwrap();
+    async fn test_yachtsql_executor_set_default_project_none() {
+        let executor = YachtSqlExecutor::new();
+        executor.set_default_project(Some("test".to_string()));
+        executor.set_default_project(None);
+        let project = executor.get_default_project();
         assert!(project.is_none());
     }
 
     #[tokio::test]
-    async fn test_executor_mock_get_projects() {
-        let executor = Executor::mock().unwrap();
-        let projects = executor.get_projects().unwrap();
+    async fn test_yachtsql_executor_get_projects() {
+        let executor = YachtSqlExecutor::new();
+        let projects = executor.get_projects();
         assert!(projects.is_empty() || !projects.is_empty());
     }
 
     #[tokio::test]
-    async fn test_executor_mock_get_datasets() {
-        let executor = Executor::mock().unwrap();
-        let datasets = executor.get_datasets("project").unwrap();
+    async fn test_yachtsql_executor_get_datasets() {
+        let executor = YachtSqlExecutor::new();
+        let datasets = executor.get_datasets("project");
         assert!(datasets.is_empty() || !datasets.is_empty());
     }
 
     #[tokio::test]
-    async fn test_executor_mock_get_tables_in_dataset() {
-        let executor = Executor::mock().unwrap();
-        let tables = executor
-            .get_tables_in_dataset("project", "dataset")
-            .unwrap();
+    async fn test_yachtsql_executor_get_tables_in_dataset() {
+        let executor = YachtSqlExecutor::new();
+        let tables = executor.get_tables_in_dataset("project", "dataset");
         assert!(tables.is_empty() || !tables.is_empty());
     }
 }

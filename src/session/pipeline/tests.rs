@@ -6,8 +6,8 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::runtime::Runtime;
 
-fn create_mock_executor() -> Arc<Executor> {
-    Arc::new(Executor::Mock(YachtSqlExecutor::new()))
+fn create_mock_executor() -> Arc<YachtSqlExecutor> {
+    Arc::new(YachtSqlExecutor::new())
 }
 
 fn test_runtime() -> Runtime {
@@ -19,7 +19,7 @@ trait ExecutorTestExt {
     fn execute_statement_sync(&self, sql: &str) -> Result<u64>;
 }
 
-impl ExecutorTestExt for Arc<Executor> {
+impl ExecutorTestExt for Arc<YachtSqlExecutor> {
     fn execute_query_sync(&self, sql: &str) -> Result<QueryResult> {
         let rt = test_runtime();
         rt.block_on(self.execute_query(sql))
@@ -34,21 +34,21 @@ impl ExecutorTestExt for Arc<Executor> {
 trait PipelineTestExt {
     fn run_sync(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<YachtSqlExecutor>,
         targets: Option<Vec<String>>,
     ) -> Result<PipelineResult>;
     fn retry_failed_sync(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<YachtSqlExecutor>,
         prev_result: &PipelineResult,
     ) -> Result<PipelineResult>;
-    fn clear_sync(&mut self, executor: &Arc<Executor>);
+    fn clear_sync(&mut self, executor: &Arc<YachtSqlExecutor>);
 }
 
 impl PipelineTestExt for Pipeline {
     fn run_sync(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<YachtSqlExecutor>,
         targets: Option<Vec<String>>,
     ) -> Result<PipelineResult> {
         let rt = test_runtime();
@@ -62,7 +62,7 @@ impl PipelineTestExt for Pipeline {
 
     fn retry_failed_sync(
         &self,
-        executor: Arc<Executor>,
+        executor: Arc<YachtSqlExecutor>,
         prev_result: &PipelineResult,
     ) -> Result<PipelineResult> {
         let rt = test_runtime();
@@ -75,7 +75,7 @@ impl PipelineTestExt for Pipeline {
         })
     }
 
-    fn clear_sync(&mut self, executor: &Arc<Executor>) {
+    fn clear_sync(&mut self, executor: &Arc<YachtSqlExecutor>) {
         let rt = test_runtime();
         let exec = executor.clone();
         let tables: Vec<String> = self.tables.keys().cloned().collect();
