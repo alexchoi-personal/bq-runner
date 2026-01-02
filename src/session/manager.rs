@@ -10,7 +10,7 @@ use crate::rpc::types::{
     DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
 };
 
-use super::loader;
+use crate::dag_loader;
 use super::pipeline::{Pipeline, PipelineResult, TableError};
 
 pub struct SessionManager {
@@ -284,7 +284,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<DagTableInfo>, Vec<SqlTableInfo>)> {
-        let sql_files = loader::discover_sql_files(root_path)?;
+        let sql_files = dag_loader::discover_sql_files(root_path)?;
 
         let tables: Vec<DagTableDef> = sql_files
             .iter()
@@ -316,7 +316,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = loader::discover_parquet_files(root_path)?;
+        let parquet_files = dag_loader::discover_parquet_files(root_path)?;
 
         let executor = {
             let sessions = self.sessions.read();
@@ -333,7 +333,7 @@ impl SessionManager {
     async fn load_parquet_files_parallel(
         &self,
         executor: Arc<Executor>,
-        parquet_files: Vec<loader::ParquetFile>,
+        parquet_files: Vec<dag_loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
         let mut handles = Vec::new();
 
@@ -370,7 +370,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<ParquetTableInfo>, Vec<SqlTableInfo>, Vec<DagTableInfo>)> {
-        let discovered = loader::discover_files(root_path)?;
+        let discovered = dag_loader::discover_files(root_path)?;
 
         let executor = {
             let sessions = self.sessions.read();
