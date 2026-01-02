@@ -3,11 +3,10 @@ mod execution;
 mod types;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread;
 
 use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 use crate::error::{Error, Result};
 use crate::executor::{Executor, ExecutorMode};
@@ -208,7 +207,8 @@ impl Pipeline {
             max_concurrency,
         }));
 
-        let (tx, rx) = mpsc::channel::<(String, Result<()>)>();
+        let handle = tokio::runtime::Handle::current();
+        let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
         self.spawn_ready_tables(&executor, &state, &tx);
 
@@ -216,9 +216,9 @@ impl Pipeline {
         let mut processed = 0;
 
         while processed < total_count {
-            let (name, outcome) = match rx.recv() {
-                Ok(msg) => msg,
-                Err(_) => break,
+            let (name, outcome) = match handle.block_on(rx.recv()) {
+                Some(msg) => msg,
+                None => break,
             };
 
             processed += 1;
@@ -289,13 +289,17 @@ impl Pipeline {
             let table = self.tables.get(&name).cloned();
             let tx = tx.clone();
 
-            thread::spawn(move || {
+            tokio::spawn(async move {
                 let res = if let Some(table) = table {
-                    execute_table(&executor, &table)
+                    tokio::task::spawn_blocking(move || execute_table(&executor, &table))
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(Error::Internal(format!("Task join error: {}", e)))
+                        })
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
-                let _ = tx.send((name, res));
+                let _ = tx.send((name, res)).await;
             });
         }
     }
@@ -412,11 +416,10 @@ impl Pipeline {
             .collect()
     }
 
-    pub fn clear(&mut self, executor: &Executor) {
-        let handle = tokio::runtime::Handle::current();
+    pub async fn clear(&mut self, executor: &Executor) {
         for table_name in self.tables.keys() {
             let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-            let _ = handle.block_on(executor.execute_statement(&drop_sql));
+            let _ = executor.execute_statement(&drop_sql).await;
         }
         self.tables.clear();
     }
@@ -510,18 +513,10 @@ mod tests {
         fn clear_sync(&mut self, executor: &Arc<Executor>) {
             let rt = test_runtime();
             let exec = executor.clone();
-            let tables: Vec<String> = self.tables.keys().cloned().collect();
-            rt.block_on(async move {
-                tokio::task::spawn_blocking(move || {
-                    let handle = tokio::runtime::Handle::current();
-                    for table_name in tables {
-                        let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-                        let _ = handle.block_on(exec.execute_statement(&drop_sql));
-                    }
-                })
-                .await
-                .unwrap()
-            });
+            for table_name in self.tables.keys() {
+                let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
+                let _ = rt.block_on(exec.execute_statement(&drop_sql));
+            }
             self.tables.clear();
         }
     }
