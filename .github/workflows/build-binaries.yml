@@ -38,45 +38,24 @@ jobs:
 
   build:
     needs: [fmt, clippy, test]
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact: bq-runner-linux-x86_64
-            use_cross: false
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact: bq-runner-linux-aarch64
-            use_cross: true
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Build with cross
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Build native
-        if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/bq-runner
+          name: bq-runner-linux-x86_64
+          path: target/release/bq-runner-server
 
   commit-binaries:
     needs: build
@@ -89,23 +68,15 @@ jobs:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download x86_64 binary
+      - name: Download binary
         uses: actions/download-artifact@v4
         with:
           name: bq-runner-linux-x86_64
           path: bin/
 
-      - name: Download aarch64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: bq-runner-linux-aarch64
-          path: bin/aarch64/
-
-      - name: Rename binaries
+      - name: Rename binary
         run: |
-          mv bin/bq-runner bin/bq-runner-linux-x86_64
-          mv bin/aarch64/bq-runner bin/bq-runner-linux-aarch64
-          rm -rf bin/aarch64
+          mv bin/bq-runner-server bin/bq-runner-linux-x86_64
           chmod +x bin/bq-runner-*
 
       - name: Commit binaries
