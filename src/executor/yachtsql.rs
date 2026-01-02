@@ -10,7 +10,7 @@ use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
 
-pub trait MockExecutorExt {
+pub(crate) trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
     fn describe_table(
         &self,
@@ -102,7 +102,7 @@ impl YachtSqlExecutor {
                 let mut row_values = Vec::new();
                 for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
                     let col = batch.column(col_idx);
-                    let bq_type = &col_schema.column_type;
+                    let bq_type = col_schema.column_type.as_str();
                     let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_type);
                     row_values.push(value);
                 }
@@ -385,7 +385,11 @@ mod tests {
             .await
             .unwrap();
         let result = executor.list_tables().await;
-        assert!(result.is_ok() || result.is_err());
+        assert!(
+            result.is_err(),
+            "Expected error (information_schema not supported) but got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -396,7 +400,11 @@ mod tests {
             .await
             .unwrap();
         let result = executor.describe_table("desc_test").await;
-        assert!(result.is_ok() || result.is_err());
+        assert!(
+            result.is_err(),
+            "Expected error (information_schema not supported) but got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -414,21 +422,21 @@ mod tests {
     async fn test_get_projects() {
         let executor = YachtSqlExecutor::new();
         let projects = executor.get_projects();
-        assert!(projects.is_empty() || !projects.is_empty());
+        assert!(projects.is_empty(), "New executor should have no projects");
     }
 
     #[tokio::test]
     async fn test_get_datasets() {
         let executor = YachtSqlExecutor::new();
         let datasets = executor.get_datasets("some_project");
-        assert!(datasets.is_empty() || !datasets.is_empty());
+        assert!(datasets.is_empty(), "New executor should have no datasets");
     }
 
     #[tokio::test]
     async fn test_get_tables_in_dataset() {
         let executor = YachtSqlExecutor::new();
         let tables = executor.get_tables_in_dataset("proj", "dataset");
-        assert!(tables.is_empty() || !tables.is_empty());
+        assert!(tables.is_empty(), "New executor should have no tables");
     }
 
     #[tokio::test]
@@ -1070,7 +1078,11 @@ mod tests {
         let result = executor
             .execute_query("SELECT RANGE(DATE '2020-01-01', DATE '2020-12-31') AS r")
             .await;
-        assert!(result.is_ok() || result.is_err());
+        assert!(
+            result.is_ok(),
+            "Expected RANGE query to succeed but got: {:?}",
+            result
+        );
     }
 
     #[tokio::test]

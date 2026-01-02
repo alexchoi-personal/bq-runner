@@ -8,9 +8,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
-use crate::rpc::types::{DagTableDef, DagTableDetail, DagTableInfo};
 
 pub use types::{PipelineResult, PipelineTable, TableError};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
@@ -69,7 +69,7 @@ impl Pipeline {
         Ok(infos)
     }
 
-    pub fn run(
+    pub async fn run(
         &self,
         executor: Arc<dyn ExecutorBackend>,
         targets: Option<Vec<String>>,
@@ -80,10 +80,10 @@ impl Pipeline {
             self.tables.keys().cloned().collect()
         };
 
-        self.run_subset(executor, subset)
+        self.run_subset(executor, subset).await
     }
 
-    pub fn retry_failed(
+    pub async fn retry_failed(
         &self,
         executor: Arc<dyn ExecutorBackend>,
         previous_result: &PipelineResult,
@@ -95,10 +95,10 @@ impl Pipeline {
             .chain(previous_result.skipped.iter().cloned())
             .collect();
 
-        self.run_subset(executor, subset)
+        self.run_subset(executor, subset).await
     }
 
-    fn run_subset(
+    async fn run_subset(
         &self,
         executor: Arc<dyn ExecutorBackend>,
         tables: HashSet<String>,
@@ -110,13 +110,13 @@ impl Pipeline {
         match executor.mode() {
             ExecutorMode::Mock => {
                 let levels = self.topological_sort_levels(&tables)?;
-                self.run_in_serial(executor.as_ref(), levels)
+                self.run_in_serial(executor.as_ref(), levels).await
             }
-            ExecutorMode::BigQuery => self.run_via_streaming(executor, tables),
+            ExecutorMode::BigQuery => self.run_via_streaming(executor, tables).await,
         }
     }
 
-    fn run_in_serial(
+    async fn run_in_serial(
         &self,
         executor: &dyn ExecutorBackend,
         levels: Vec<Vec<String>>,
@@ -132,7 +132,7 @@ impl Pipeline {
                     continue;
                 }
 
-                match self.execute_single_table(executor, &name) {
+                match self.execute_single_table(executor, &name).await {
                     Ok(()) => result.succeeded.push(name),
                     Err(e) => {
                         blocked_tables.insert(name.clone());
@@ -148,7 +148,7 @@ impl Pipeline {
         Ok(result)
     }
 
-    fn run_via_streaming(
+    async fn run_via_streaming(
         &self,
         executor: Arc<dyn ExecutorBackend>,
         subset: HashSet<String>,
@@ -185,7 +185,6 @@ impl Pipeline {
             max_concurrency,
         }));
 
-        let handle = tokio::runtime::Handle::current();
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
         self.spawn_ready_tables(&executor, &state, &tx);
@@ -194,7 +193,7 @@ impl Pipeline {
         let mut processed = 0;
 
         while processed < total_count {
-            let (name, outcome) = match handle.block_on(rx.recv()) {
+            let (name, outcome) = match rx.recv().await {
                 Some(msg) => msg,
                 None => break,
             };
@@ -249,29 +248,23 @@ impl Pipeline {
         state: &Arc<Mutex<StreamState>>,
         tx: &mpsc::Sender<(String, Result<()>)>,
     ) {
-        let ready: Vec<String> = {
-            let s = state.lock();
-            s.ready_tables()
+        let ready_to_spawn: Vec<String> = {
+            let mut s = state.lock();
+            let ready = s.ready_tables();
+            for name in &ready {
+                s.mark_in_flight(name);
+            }
+            ready
         };
 
-        for name in ready {
-            {
-                let mut s = state.lock();
-                if !s.is_pending(&name) {
-                    continue;
-                }
-                s.mark_in_flight(&name);
-            }
-
+        for name in ready_to_spawn {
             let executor = Arc::clone(executor);
             let table = self.tables.get(&name).cloned();
             let tx = tx.clone();
 
             tokio::spawn(async move {
                 let res = if let Some(table) = table {
-                    tokio::task::spawn_blocking(move || execute_table(executor.as_ref(), &table))
-                        .await
-                        .unwrap_or_else(|e| Err(Error::Internal(format!("Task join error: {}", e))))
+                    execute_table(executor.as_ref(), &table).await
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
@@ -313,12 +306,12 @@ impl Pipeline {
         Ok(needed)
     }
 
-    fn execute_single_table(&self, executor: &dyn ExecutorBackend, name: &str) -> Result<()> {
+    async fn execute_single_table(&self, executor: &dyn ExecutorBackend, name: &str) -> Result<()> {
         let table = self
             .tables
             .get(name)
             .ok_or_else(|| Error::InvalidRequest(format!("Table not found: {}", name)))?;
-        execute_table(executor, table)
+        execute_table(executor, table).await
     }
 
     fn topological_sort_levels(&self, queries: &HashSet<String>) -> Result<Vec<Vec<String>>> {
@@ -463,12 +456,7 @@ mod tests {
             targets: Option<Vec<String>>,
         ) -> Result<PipelineResult> {
             let rt = test_runtime();
-            let pipeline = self.clone();
-            rt.block_on(async move {
-                tokio::task::spawn_blocking(move || pipeline.run(executor, targets))
-                    .await
-                    .map_err(|e| Error::Internal(e.to_string()))?
-            })
+            rt.block_on(self.run(executor, targets))
         }
 
         fn retry_failed_sync(
@@ -477,13 +465,7 @@ mod tests {
             prev_result: &PipelineResult,
         ) -> Result<PipelineResult> {
             let rt = test_runtime();
-            let pipeline = self.clone();
-            let prev = prev_result.clone();
-            rt.block_on(async move {
-                tokio::task::spawn_blocking(move || pipeline.retry_failed(executor, &prev))
-                    .await
-                    .map_err(|e| Error::Internal(e.to_string()))?
-            })
+            rt.block_on(self.retry_failed(executor, prev_result))
         }
 
         fn clear_sync(&mut self, executor: &Arc<YachtSqlExecutor>) {
@@ -508,10 +490,7 @@ mod tests {
             schema: Some(
                 schema
                     .into_iter()
-                    .map(|(n, t)| ColumnDef {
-                        name: n.to_string(),
-                        column_type: t.to_string(),
-                    })
+                    .map(|(n, t)| ColumnDef::from((n, t)))
                     .collect(),
             ),
             rows,
@@ -1940,5 +1919,97 @@ mod tests {
     fn test_no_cte() {
         let ctes = extract_cte_names("SELECT * FROM users");
         assert!(ctes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_no_duplicate_execution_under_contention() {
+        use std::sync::atomic::AtomicUsize;
+
+        let execution_counts: Arc<HashMap<String, AtomicUsize>> = Arc::new(
+            (0..10)
+                .map(|i| (format!("table_{}", i), AtomicUsize::new(0)))
+                .collect(),
+        );
+
+        let counts_for_executor = Arc::clone(&execution_counts);
+        let executor = Arc::new(crate::executor::TestCountingExecutor::new(move |name| {
+            if let Some(counter) = counts_for_executor.get(name) {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+
+        let mut pipeline = Pipeline::new();
+        for i in 0..10 {
+            pipeline
+                .register(vec![source_table(
+                    &format!("table_{}", i),
+                    vec![("v", "INT64")],
+                    vec![json!([i])],
+                )])
+                .unwrap();
+        }
+
+        let tables: HashSet<String> = pipeline.tables.keys().cloned().collect();
+
+        let pending_deps: HashMap<String, HashSet<String>> = tables
+            .iter()
+            .map(|name| (name.clone(), HashSet::new()))
+            .collect();
+
+        let state = Arc::new(Mutex::new(StreamState {
+            pending_deps,
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: 10,
+        }));
+
+        let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(20);
+
+        let mut handles = vec![];
+        for _ in 0..8 {
+            let pipeline = pipeline.clone();
+            let executor = Arc::clone(&executor) as Arc<dyn ExecutorBackend>;
+            let state = Arc::clone(&state);
+            let tx = tx.clone();
+            handles.push(tokio::spawn(async move {
+                pipeline.spawn_ready_tables(&executor, &state, &tx);
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        drop(tx);
+
+        let mut received = 0;
+        let mut completed_count = 0;
+        while let Some((name, outcome)) = rx.recv().await {
+            received += 1;
+            {
+                let mut s = state.lock();
+                s.finish_in_flight(&name);
+                match &outcome {
+                    Ok(()) => s.mark_completed(&name),
+                    Err(_) => s.mark_blocked(&name),
+                }
+                completed_count = s.completed.len() + s.blocked.len();
+            }
+            if completed_count >= 10 {
+                break;
+            }
+        }
+
+        assert_eq!(received, 10, "Should have received exactly 10 results");
+
+        for (name, count) in execution_counts.iter() {
+            let c = count.load(Ordering::SeqCst);
+            assert_eq!(
+                c, 1,
+                "Table {} was executed {} times, expected exactly 1",
+                name, c
+            );
+        }
     }
 }

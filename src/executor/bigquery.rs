@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use google_cloud_bigquery::client::{Client, ClientConfig};
+use google_cloud_bigquery::http::job::cancel::CancelJobRequest;
 use google_cloud_bigquery::http::job::get::GetJobRequest;
 use google_cloud_bigquery::http::job::query::QueryRequest;
 use google_cloud_bigquery::http::job::{
@@ -25,9 +26,22 @@ pub struct BigQueryExecutor {
 
 impl BigQueryExecutor {
     pub async fn new() -> Result<Self> {
-        let (config, project_id) = ClientConfig::new_with_auth()
-            .await
-            .map_err(|e| Error::Executor(format!("Failed to authenticate: {}", e)))?;
+        Self::with_config(None, None).await
+    }
+
+    pub async fn with_config(
+        config: Option<ClientConfig>,
+        project_id: Option<String>,
+    ) -> Result<Self> {
+        let (config, project_id) = match config {
+            Some(c) => (c, project_id),
+            None => {
+                let (c, p) = ClientConfig::new_with_auth()
+                    .await
+                    .map_err(|e| Error::Executor(format!("Failed to authenticate: {}", e)))?;
+                (c, p)
+            }
+        };
 
         let project_id =
             project_id.ok_or_else(|| Error::Executor("No project_id in credentials".into()))?;
@@ -47,6 +61,37 @@ impl BigQueryExecutor {
             dataset_id,
             query_timeout_ms,
         })
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<()> {
+        tracing::info!(job_id = %job_id, "Attempting to cancel BigQuery job");
+
+        let request = CancelJobRequest { location: None };
+
+        match self
+            .client
+            .job()
+            .cancel(&self.project_id, job_id, &request)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(job_id = %job_id, "BigQuery job cancelled successfully");
+                Ok(())
+            }
+            Err(e) => {
+                let error_str = e.to_string();
+                if error_str.contains("404") || error_str.contains("notFound") {
+                    tracing::debug!(job_id = %job_id, "Job already completed, nothing to cancel");
+                    Ok(())
+                } else {
+                    tracing::warn!(job_id = %job_id, error = %e, "Failed to cancel BigQuery job");
+                    Err(Error::BigQuery(format!(
+                        "Failed to cancel job {}: {}",
+                        job_id, e
+                    )))
+                }
+            }
+        }
     }
 
     async fn load_parquet_impl(
@@ -70,7 +115,7 @@ impl BigQueryExecutor {
                 .iter()
                 .map(|col| TableFieldSchema {
                     name: col.name.clone(),
-                    data_type: string_to_bq_type(&col.column_type),
+                    data_type: string_to_bq_type(col.column_type.as_str()),
                     ..Default::default()
                 })
                 .collect(),
@@ -117,8 +162,41 @@ impl BigQueryExecutor {
             ));
         }
 
+        let start = std::time::Instant::now();
+        let mut interval = std::time::Duration::from_secs(1);
+        let max_interval = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(1800);
+        let deadline = start + timeout;
+        let mut poll_count = 0u32;
+
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            poll_count += 1;
+            let elapsed = start.elapsed();
+
+            if poll_count.is_multiple_of(10) {
+                tracing::info!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    elapsed_secs = elapsed.as_secs(),
+                    "BigQuery job polling in progress"
+                );
+            }
+
+            if std::time::Instant::now() > deadline {
+                tracing::warn!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    timeout_secs = timeout.as_secs(),
+                    "BigQuery job timed out, attempting cancellation"
+                );
+                if let Err(e) = self.cancel_job(job_id).await {
+                    tracing::warn!(job_id = %job_id, error = %e, "Cancellation failed");
+                }
+                return Err(Error::Timeout {
+                    job_id: job_id.to_string(),
+                    elapsed_secs: timeout.as_secs(),
+                });
+            }
 
             let get_request = GetJobRequest { location: None };
             let status = self
@@ -136,6 +214,13 @@ impl BigQueryExecutor {
                     )));
                 }
 
+                tracing::debug!(
+                    job_id = %job_id,
+                    poll_count = poll_count,
+                    elapsed_secs = elapsed.as_secs(),
+                    "BigQuery job completed"
+                );
+
                 let rows = status
                     .statistics
                     .and_then(|s| s.load)
@@ -144,6 +229,9 @@ impl BigQueryExecutor {
 
                 return Ok(rows);
             }
+
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(max_interval);
         }
     }
 
@@ -288,5 +376,362 @@ fn bq_value_to_json(value: BqValue) -> JsonValue {
         BqValue::Struct(tuple) => {
             JsonValue::Array(tuple.f.into_iter().map(|c| bq_value_to_json(c.v)).collect())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use google_cloud_bigquery::http::table::TableFieldType;
+    use serde_json::json;
+
+    #[test]
+    fn test_bq_type_to_string_all_types() {
+        assert_eq!(bq_type_to_string(&TableFieldType::String), "STRING");
+        assert_eq!(bq_type_to_string(&TableFieldType::Bytes), "BYTES");
+        assert_eq!(bq_type_to_string(&TableFieldType::Integer), "INT64");
+        assert_eq!(bq_type_to_string(&TableFieldType::Int64), "INT64");
+        assert_eq!(bq_type_to_string(&TableFieldType::Float), "FLOAT64");
+        assert_eq!(bq_type_to_string(&TableFieldType::Float64), "FLOAT64");
+        assert_eq!(bq_type_to_string(&TableFieldType::Boolean), "BOOLEAN");
+        assert_eq!(bq_type_to_string(&TableFieldType::Bool), "BOOLEAN");
+        assert_eq!(bq_type_to_string(&TableFieldType::Timestamp), "TIMESTAMP");
+        assert_eq!(bq_type_to_string(&TableFieldType::Record), "STRUCT");
+        assert_eq!(bq_type_to_string(&TableFieldType::Struct), "STRUCT");
+        assert_eq!(bq_type_to_string(&TableFieldType::Date), "DATE");
+        assert_eq!(bq_type_to_string(&TableFieldType::Time), "TIME");
+        assert_eq!(bq_type_to_string(&TableFieldType::Datetime), "DATETIME");
+        assert_eq!(bq_type_to_string(&TableFieldType::Numeric), "NUMERIC");
+        assert_eq!(bq_type_to_string(&TableFieldType::Decimal), "NUMERIC");
+        assert_eq!(bq_type_to_string(&TableFieldType::Bignumeric), "BIGNUMERIC");
+        assert_eq!(bq_type_to_string(&TableFieldType::Bigdecimal), "BIGNUMERIC");
+        assert_eq!(bq_type_to_string(&TableFieldType::Interval), "INTERVAL");
+        assert_eq!(bq_type_to_string(&TableFieldType::Json), "JSON");
+    }
+
+    #[test]
+    fn test_string_to_bq_type_all_types() {
+        assert!(matches!(
+            string_to_bq_type("STRING"),
+            TableFieldType::String
+        ));
+        assert!(matches!(string_to_bq_type("BYTES"), TableFieldType::Bytes));
+        assert!(matches!(string_to_bq_type("INT64"), TableFieldType::Int64));
+        assert!(matches!(
+            string_to_bq_type("INTEGER"),
+            TableFieldType::Int64
+        ));
+        assert!(matches!(
+            string_to_bq_type("FLOAT64"),
+            TableFieldType::Float64
+        ));
+        assert!(matches!(
+            string_to_bq_type("FLOAT"),
+            TableFieldType::Float64
+        ));
+        assert!(matches!(
+            string_to_bq_type("BOOLEAN"),
+            TableFieldType::Boolean
+        ));
+        assert!(matches!(string_to_bq_type("BOOL"), TableFieldType::Boolean));
+        assert!(matches!(
+            string_to_bq_type("TIMESTAMP"),
+            TableFieldType::Timestamp
+        ));
+        assert!(matches!(string_to_bq_type("DATE"), TableFieldType::Date));
+        assert!(matches!(string_to_bq_type("TIME"), TableFieldType::Time));
+        assert!(matches!(
+            string_to_bq_type("DATETIME"),
+            TableFieldType::Datetime
+        ));
+        assert!(matches!(
+            string_to_bq_type("NUMERIC"),
+            TableFieldType::Numeric
+        ));
+        assert!(matches!(
+            string_to_bq_type("DECIMAL"),
+            TableFieldType::Numeric
+        ));
+        assert!(matches!(
+            string_to_bq_type("BIGNUMERIC"),
+            TableFieldType::Bignumeric
+        ));
+        assert!(matches!(
+            string_to_bq_type("BIGDECIMAL"),
+            TableFieldType::Bignumeric
+        ));
+        assert!(matches!(
+            string_to_bq_type("INTERVAL"),
+            TableFieldType::Interval
+        ));
+        assert!(matches!(string_to_bq_type("JSON"), TableFieldType::Json));
+        assert!(matches!(
+            string_to_bq_type("STRUCT"),
+            TableFieldType::Struct
+        ));
+        assert!(matches!(
+            string_to_bq_type("RECORD"),
+            TableFieldType::Struct
+        ));
+    }
+
+    #[test]
+    fn test_string_to_bq_type_case_insensitive() {
+        assert!(matches!(
+            string_to_bq_type("string"),
+            TableFieldType::String
+        ));
+        assert!(matches!(
+            string_to_bq_type("String"),
+            TableFieldType::String
+        ));
+        assert!(matches!(string_to_bq_type("int64"), TableFieldType::Int64));
+        assert!(matches!(
+            string_to_bq_type("Boolean"),
+            TableFieldType::Boolean
+        ));
+    }
+
+    #[test]
+    fn test_string_to_bq_type_unknown_defaults_to_string() {
+        assert!(matches!(
+            string_to_bq_type("UNKNOWN"),
+            TableFieldType::String
+        ));
+        assert!(matches!(
+            string_to_bq_type("FOOBAR"),
+            TableFieldType::String
+        ));
+        assert!(matches!(string_to_bq_type(""), TableFieldType::String));
+    }
+
+    #[test]
+    fn test_bq_value_to_json_null() {
+        let result = bq_value_to_json(BqValue::Null);
+        assert_eq!(result, JsonValue::Null);
+    }
+
+    #[test]
+    fn test_bq_value_to_json_string() {
+        let result = bq_value_to_json(BqValue::String("hello".to_string()));
+        assert_eq!(result, json!("hello"));
+    }
+
+    #[test]
+    fn test_bq_value_to_json_array() {
+        use google_cloud_bigquery::http::tabledata::list::Cell;
+        let cells = vec![
+            Cell {
+                v: BqValue::String("a".to_string()),
+            },
+            Cell {
+                v: BqValue::String("b".to_string()),
+            },
+        ];
+        let result = bq_value_to_json(BqValue::Array(cells));
+        assert_eq!(result, json!(["a", "b"]));
+    }
+
+    #[test]
+    fn test_bq_value_to_json_struct() {
+        use google_cloud_bigquery::http::tabledata::list::{Cell, Tuple};
+        let tuple = Tuple {
+            f: vec![
+                Cell {
+                    v: BqValue::String("field1".to_string()),
+                },
+                Cell {
+                    v: BqValue::String("field2".to_string()),
+                },
+            ],
+        };
+        let result = bq_value_to_json(BqValue::Struct(tuple));
+        assert_eq!(result, json!(["field1", "field2"]));
+    }
+
+    #[test]
+    fn test_bq_value_to_json_nested_array() {
+        use google_cloud_bigquery::http::tabledata::list::Cell;
+        let inner_cells = vec![Cell {
+            v: BqValue::String("inner".to_string()),
+        }];
+        let outer_cells = vec![
+            Cell {
+                v: BqValue::Array(inner_cells),
+            },
+            Cell { v: BqValue::Null },
+        ];
+        let result = bq_value_to_json(BqValue::Array(outer_cells));
+        assert_eq!(result, json!([["inner"], null]));
+    }
+
+    #[test]
+    fn test_executor_mode() {
+        assert_eq!(format!("{:?}", ExecutorMode::BigQuery), "BigQuery");
+    }
+
+    #[test]
+    fn test_type_conversions_roundtrip() {
+        let types = [
+            "STRING",
+            "BYTES",
+            "INT64",
+            "FLOAT64",
+            "BOOLEAN",
+            "TIMESTAMP",
+            "DATE",
+            "TIME",
+            "DATETIME",
+            "NUMERIC",
+            "BIGNUMERIC",
+            "INTERVAL",
+            "JSON",
+            "STRUCT",
+        ];
+
+        for type_str in types {
+            let bq_type = string_to_bq_type(type_str);
+            let back_to_str = bq_type_to_string(&bq_type);
+            assert_eq!(type_str, back_to_str, "Roundtrip failed for {}", type_str);
+        }
+    }
+
+    #[test]
+    fn test_type_aliases() {
+        assert_eq!(bq_type_to_string(&string_to_bq_type("INTEGER")), "INT64");
+        assert_eq!(bq_type_to_string(&string_to_bq_type("FLOAT")), "FLOAT64");
+        assert_eq!(bq_type_to_string(&string_to_bq_type("BOOL")), "BOOLEAN");
+        assert_eq!(bq_type_to_string(&string_to_bq_type("DECIMAL")), "NUMERIC");
+        assert_eq!(
+            bq_type_to_string(&string_to_bq_type("BIGDECIMAL")),
+            "BIGNUMERIC"
+        );
+        assert_eq!(bq_type_to_string(&string_to_bq_type("RECORD")), "STRUCT");
+    }
+
+    #[ignore = "Requires BigQuery emulator running on localhost:9050/9060"]
+    #[tokio::test]
+    async fn test_executor_with_emulator() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let mock_uri = mock_server.uri();
+
+        Mock::given(method("POST"))
+            .and(path_regex("/bigquery/v2/projects/.*/queries"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "bigquery#queryResponse",
+                "schema": {
+                    "fields": [
+                        {"name": "count", "type": "INTEGER", "mode": "NULLABLE"}
+                    ]
+                },
+                "rows": [
+                    {"f": [{"v": "42"}]}
+                ],
+                "jobComplete": true,
+                "totalRows": "1"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = ClientConfig::new_with_emulator("localhost:9060", mock_uri);
+        let executor = BigQueryExecutor::with_config(Some(config), Some("test-project".into()))
+            .await
+            .expect("Failed to create executor");
+
+        let result = executor
+            .execute_query("SELECT COUNT(*) as count FROM table")
+            .await;
+        assert!(result.is_ok());
+
+        let query_result = result.unwrap();
+        assert_eq!(query_result.columns.len(), 1);
+        assert_eq!(query_result.columns[0].name, "count");
+    }
+
+    #[ignore = "Requires real BigQuery credentials"]
+    #[tokio::test]
+    async fn test_real_bigquery_connection() {
+        let executor = BigQueryExecutor::new().await;
+        if executor.is_err() {
+            println!("Skipping: No BigQuery credentials available");
+            return;
+        }
+        let executor = executor.unwrap();
+        let result = executor.execute_query("SELECT 1 as test").await;
+        assert!(result.is_ok());
+    }
+
+    #[ignore = "Requires BigQuery emulator on localhost:9050/9060"]
+    #[test]
+    fn test_with_config_validates_project_id() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let config = ClientConfig::new_with_emulator("localhost:9060", "http://localhost:9050");
+            let result = BigQueryExecutor::with_config(Some(config), None).await;
+
+            assert!(result.is_err());
+            let err = result.err().unwrap();
+            match err {
+                Error::Executor(msg) => {
+                    assert!(msg.contains("project_id") || msg.contains("credentials"));
+                }
+                _ => panic!("Expected Executor error about missing project_id"),
+            }
+        });
+    }
+
+    #[ignore = "Requires BigQuery emulator on localhost:9050/9060"]
+    #[test]
+    fn test_load_parquet_validates_gcs_path() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let config = ClientConfig::new_with_emulator("localhost:9060", "http://localhost:9050");
+            let executor = BigQueryExecutor::with_config(Some(config), Some("test-project".into()))
+                .await
+                .expect("Failed to create executor");
+
+            let result = executor
+                .load_parquet("test_table", "/local/path/file.parquet", &[])
+                .await;
+            assert!(result.is_err());
+
+            let error = result.unwrap_err();
+            match error {
+                Error::Executor(msg) => {
+                    assert!(msg.contains("GCS path"));
+                }
+                _ => panic!("Expected Executor error about GCS path"),
+            }
+        });
+    }
+
+    #[ignore = "Requires BigQuery emulator on localhost:9050/9060"]
+    #[test]
+    fn test_load_parquet_requires_dataset_env() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            std::env::remove_var("BQ_DATASET");
+
+            let config = ClientConfig::new_with_emulator("localhost:9060", "http://localhost:9050");
+            let executor = BigQueryExecutor::with_config(Some(config), Some("test-project".into()))
+                .await
+                .expect("Failed to create executor");
+
+            let result = executor
+                .load_parquet("test_table", "gs://bucket/file.parquet", &[])
+                .await;
+            assert!(result.is_err());
+
+            let error = result.unwrap_err();
+            match error {
+                Error::Executor(msg) => {
+                    assert!(msg.contains("BQ_DATASET"));
+                }
+                _ => panic!("Expected Executor error about BQ_DATASET"),
+            }
+        });
     }
 }

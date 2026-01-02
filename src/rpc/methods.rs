@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -7,29 +8,26 @@ use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
 
-macro_rules! rpc_method {
-    (session: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
-        async fn $name(&self, params: Value) -> Result<Value> {
-            let $p: $params_type = serde_json::from_value(params)?;
-            let $sid = parse_uuid(&$p.session_id)?;
-            let $sm = &self.session_manager;
-            Ok(json!($body))
-        }
+pub trait HasSessionId {
+    fn session_id(&self) -> &str;
+}
+
+macro_rules! impl_has_session_id {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl HasSessionId for $t {
+                fn session_id(&self) -> &str {
+                    &self.session_id
+                }
+            }
+        )*
     };
-    (session_async: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
-        async fn $name(&self, params: Value) -> Result<Value> {
-            let $p: $params_type = serde_json::from_value(params)?;
-            let $sid = parse_uuid(&$p.session_id)?;
-            let $sm = &self.session_manager;
-            Ok(json!($body.await?))
-        }
-    };
-    (no_session: $name:ident, |$sm:ident| $body:expr) => {
-        async fn $name(&self, _params: Value) -> Result<Value> {
-            let $sm = &self.session_manager;
-            Ok(json!($body))
-        }
-    };
+}
+
+fn parse_session_params<T: DeserializeOwned + HasSessionId>(params: Value) -> Result<(T, Uuid)> {
+    let p: T = serde_json::from_value(params)?;
+    let session_id = parse_uuid(p.session_id())?;
+    Ok((p, session_id))
 }
 
 use super::types::{
@@ -44,6 +42,15 @@ use super::types::{
     RegisterDagResult, RetryDagParams, RunDagParams, RunDagResult, SetDefaultProjectParams,
     SetDefaultProjectResult, TableErrorInfo, TableInfo,
 };
+
+impl_has_session_id!(
+    DestroySessionParams,
+    GetDagParams,
+    GetDefaultProjectParams,
+    GetProjectsParams,
+    GetDatasetsParams,
+    GetTablesInDatasetParams,
+);
 
 pub struct RpcMethods {
     session_manager: Arc<SessionManager>,
@@ -82,9 +89,9 @@ impl RpcMethods {
         }
     }
 
-    rpc_method!(no_session: ping, |_sm| PingResult {
-        message: "pong".to_string()
-    });
+    async fn ping(&self, _params: Value) -> Result<Value> {
+        Ok(json!(PingResult { message: "pong".to_string() }))
+    }
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
         let session_id = self.session_manager.create_session().await?;
@@ -94,10 +101,11 @@ impl RpcMethods {
         }))
     }
 
-    rpc_method!(session: destroy_session, DestroySessionParams, |sm, session_id, _p| {
-        sm.destroy_session(session_id)?;
-        DestroySessionResult { success: true }
-    });
+    async fn destroy_session(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<DestroySessionParams>(params)?;
+        self.session_manager.destroy_session(session_id)?;
+        Ok(json!(DestroySessionResult { success: true }))
+    }
 
     async fn query(&self, params: Value) -> Result<Value> {
         let p: QueryParams = serde_json::from_value(params)?;
@@ -183,10 +191,11 @@ impl RpcMethods {
         let session_id = parse_uuid(&p.session_id)?;
         let targets = p.table_names;
         let retry_count = p.retry_count;
-        let session_manager = Arc::clone(&self.session_manager);
 
-        let result =
-            run_blocking(move || session_manager.run_dag(session_id, targets, retry_count)).await?;
+        let result = self
+            .session_manager
+            .run_dag(session_id, targets, retry_count)
+            .await?;
 
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
@@ -208,12 +217,11 @@ impl RpcMethods {
         let session_id = parse_uuid(&p.session_id)?;
         let failed_tables = p.failed_tables;
         let skipped_tables = p.skipped_tables;
-        let session_manager = Arc::clone(&self.session_manager);
 
-        let result = run_blocking(move || {
-            session_manager.retry_dag(session_id, failed_tables, skipped_tables)
-        })
-        .await?;
+        let result = self
+            .session_manager
+            .retry_dag(session_id, failed_tables, skipped_tables)
+            .await?;
 
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
@@ -230,10 +238,11 @@ impl RpcMethods {
         }))
     }
 
-    rpc_method!(session: get_dag, GetDagParams, |sm, session_id, _p| {
-        let tables = sm.get_dag(session_id)?;
-        GetDagResult { tables }
-    });
+    async fn get_dag(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetDagParams>(params)?;
+        let tables = self.session_manager.get_dag(session_id)?;
+        Ok(json!(GetDagResult { tables }))
+    }
 
     async fn clear_dag(&self, params: Value) -> Result<Value> {
         let p: ClearDagParams = serde_json::from_value(params)?;
@@ -286,10 +295,7 @@ impl RpcMethods {
             name: p.table_name,
             schema: schema
                 .into_iter()
-                .map(|(name, col_type)| ColumnDef {
-                    name,
-                    column_type: col_type,
-                })
+                .map(|(name, col_type)| ColumnDef::from((name, col_type)))
                 .collect(),
             row_count,
         }))
@@ -305,25 +311,29 @@ impl RpcMethods {
         Ok(json!(SetDefaultProjectResult { success: true }))
     }
 
-    rpc_method!(session: get_default_project, GetDefaultProjectParams, |sm, session_id, _p| {
-        let project = sm.get_default_project(session_id)?;
-        GetDefaultProjectResult { project }
-    });
+    async fn get_default_project(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetDefaultProjectParams>(params)?;
+        let project = self.session_manager.get_default_project(session_id)?;
+        Ok(json!(GetDefaultProjectResult { project }))
+    }
 
-    rpc_method!(session: get_projects, GetProjectsParams, |sm, session_id, _p| {
-        let projects = sm.get_projects(session_id)?;
-        GetProjectsResult { projects }
-    });
+    async fn get_projects(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetProjectsParams>(params)?;
+        let projects = self.session_manager.get_projects(session_id)?;
+        Ok(json!(GetProjectsResult { projects }))
+    }
 
-    rpc_method!(session: get_datasets, GetDatasetsParams, |sm, session_id, p| {
-        let datasets = sm.get_datasets(session_id, &p.project)?;
-        GetDatasetsResult { datasets }
-    });
+    async fn get_datasets(&self, params: Value) -> Result<Value> {
+        let (p, session_id) = parse_session_params::<GetDatasetsParams>(params)?;
+        let datasets = self.session_manager.get_datasets(session_id, &p.project)?;
+        Ok(json!(GetDatasetsResult { datasets }))
+    }
 
-    rpc_method!(session: get_tables_in_dataset, GetTablesInDatasetParams, |sm, session_id, p| {
-        let tables = sm.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
-        GetTablesInDatasetResult { tables }
-    });
+    async fn get_tables_in_dataset(&self, params: Value) -> Result<Value> {
+        let (p, session_id) = parse_session_params::<GetTablesInDatasetParams>(params)?;
+        let tables = self.session_manager.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
+        Ok(json!(GetTablesInDatasetResult { tables }))
+    }
 
     async fn load_sql_directory(&self, params: Value) -> Result<Value> {
         let p: LoadSqlDirectoryParams = serde_json::from_value(params)?;
@@ -374,16 +384,6 @@ impl RpcMethods {
 
 fn parse_uuid(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|_| Error::InvalidRequest(format!("Invalid session ID: {}", s)))
-}
-
-async fn run_blocking<F, T>(f: F) -> Result<T>
-where
-    F: FnOnce() -> Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| Error::Internal(format!("Task join error: {e}")))?
 }
 
 #[cfg(test)]
