@@ -489,6 +489,46 @@ impl Pipeline {
         self.tables.clear();
         self.table_status.clear();
     }
+
+    pub fn define_table(&mut self, name: &str, sql: &str) -> Result<Vec<String>> {
+        let table = PipelineTable {
+            name: name.to_string(),
+            sql: Some(sql.to_string()),
+            schema: None,
+            rows: vec![],
+            dependencies: vec![],
+            is_source: false,
+        };
+        self.tables.insert(name.to_string(), table);
+        self.table_status
+            .insert(name.to_string(), TableStatus::Pending);
+
+        let deps = extract_dependencies(sql, &self.tables);
+        let table = self.tables.get_mut(name).unwrap();
+        table.dependencies = deps.clone();
+
+        self.detect_cycles(&[name.to_string()])?;
+
+        Ok(deps)
+    }
+
+    pub async fn drop_table(&mut self, executor: &dyn ExecutorBackend, name: &str) -> Result<()> {
+        if self.tables.remove(name).is_some() {
+            self.table_status.remove(name);
+            let drop_sql = format!("DROP TABLE IF EXISTS {}", name);
+            executor.execute_statement(&drop_sql).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn drop_all_tables(&mut self, executor: &dyn ExecutorBackend) {
+        for table_name in self.tables.keys() {
+            let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
+            let _ = executor.execute_statement(&drop_sql).await;
+        }
+        self.tables.clear();
+        self.table_status.clear();
+    }
 }
 
 impl Default for Pipeline {

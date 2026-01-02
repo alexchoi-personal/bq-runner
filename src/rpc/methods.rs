@@ -37,6 +37,9 @@ use super::types::{
     GetProjectsResult, GetTablesInDatasetParams, GetTablesInDatasetResult, InsertParams,
     InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult, PingResult, QueryParams,
     SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
+    DefineTableParams, DefineTableResult, DefineTablesParams, DefineTablesResult,
+    DropTableParams, DropAllTablesParams, ExecuteParams, ExecuteResult,
+    LoadDirectoryParams, LoadDirectoryResult, LoadedTableInfo, HealthResult, TableError,
 };
 use super::types::dag::{
     ClearDagParams, ClearDagResult, GetDagParams, GetDagResult, LoadDagFromDirectoryParams,
@@ -67,11 +70,18 @@ impl RpcMethods {
     pub async fn dispatch(&self, method: &str, params: Value) -> Result<Value> {
         match method {
             "bq.ping" => self.ping(params).await,
+            "bq.health" => self.health(params).await,
             "bq.createSession" => self.create_session(params).await,
             "bq.destroySession" => self.destroy_session(params).await,
             "bq.query" => self.query(params).await,
             "bq.createTable" => self.create_table(params).await,
             "bq.insert" => self.insert(params).await,
+            "bq.defineTable" => self.define_table(params).await,
+            "bq.defineTables" => self.define_tables(params).await,
+            "bq.dropTable" => self.drop_table(params).await,
+            "bq.dropAllTables" => self.drop_all_tables(params).await,
+            "bq.execute" => self.execute_tables(params).await,
+            "bq.loadDirectory" => self.load_directory(params).await,
             "bq.registerDag" => self.register_dag(params).await,
             "bq.runDag" => self.run_dag(params).await,
             "bq.retryDag" => self.retry_dag(params).await,
@@ -94,6 +104,110 @@ impl RpcMethods {
 
     async fn ping(&self, _params: Value) -> Result<Value> {
         Ok(json!(PingResult { message: "pong".to_string() }))
+    }
+
+    async fn health(&self, _params: Value) -> Result<Value> {
+        let session_count = self.session_manager.session_count();
+        Ok(json!(HealthResult {
+            status: "healthy".to_string(),
+            session_count,
+            uptime_seconds: 0,
+        }))
+    }
+
+    async fn define_table(&self, params: Value) -> Result<Value> {
+        let p: DefineTableParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        let deps = self.session_manager.define_table(session_id, &p.name, &p.sql)?;
+        Ok(json!(DefineTableResult {
+            success: true,
+            dependencies: deps,
+        }))
+    }
+
+    async fn define_tables(&self, params: Value) -> Result<Value> {
+        let p: DefineTablesParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        let mut results = Vec::new();
+        for t in &p.tables {
+            let deps = self.session_manager.define_table(session_id, &t.name, &t.sql)?;
+            results.push(DefineTableResult { success: true, dependencies: deps });
+        }
+        Ok(json!(DefineTablesResult {
+            success: true,
+            tables: results,
+        }))
+    }
+
+    async fn drop_table(&self, params: Value) -> Result<Value> {
+        let p: DropTableParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        self.session_manager.drop_table(session_id, &p.name).await?;
+        Ok(json!({"success": true}))
+    }
+
+    async fn drop_all_tables(&self, params: Value) -> Result<Value> {
+        let p: DropAllTablesParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        self.session_manager.drop_all_tables(session_id).await?;
+        Ok(json!({"success": true}))
+    }
+
+    async fn execute_tables(&self, params: Value) -> Result<Value> {
+        let p: ExecuteParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        let targets = p.tables;
+        let retry_count = if p.force { 0 } else { 0 };
+
+        let result = self
+            .session_manager
+            .run_dag(session_id, targets, retry_count)
+            .await?;
+
+        Ok(json!(ExecuteResult {
+            success: result.all_succeeded(),
+            succeeded: result.succeeded,
+            failed: result
+                .failed
+                .into_iter()
+                .map(|e| TableError {
+                    table: e.table,
+                    error: e.error,
+                })
+                .collect(),
+            skipped: result.skipped,
+        }))
+    }
+
+    async fn load_directory(&self, params: Value) -> Result<Value> {
+        let p: LoadDirectoryParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+
+        let (source_tables, _computed_tables, dag_info) = self
+            .session_manager
+            .load_dag_from_directory(session_id, &p.path)
+            .await?;
+
+        let mut tables = Vec::new();
+        for t in source_tables {
+            tables.push(LoadedTableInfo {
+                name: format!("{}.{}.{}", t.project, t.dataset, t.table),
+                kind: "source".to_string(),
+                dependencies: vec![],
+            });
+        }
+        for t in dag_info {
+            tables.push(LoadedTableInfo {
+                name: t.name,
+                kind: "computed".to_string(),
+                dependencies: t.dependencies,
+            });
+        }
+
+        Ok(json!(LoadDirectoryResult {
+            success: true,
+            tables,
+        }))
     }
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
