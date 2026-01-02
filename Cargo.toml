@@ -1,6 +1,3 @@
-[workspace]
-members = [".", "crates/bq-runner-macros"]
-
 [package]
 name = "bq-runner"
 version = "0.1.0"
@@ -12,7 +9,6 @@ keywords = ["bigquery", "sql", "database", "testing"]
 categories = ["database", "development-tools::testing"]
 
 [dependencies]
-bq-runner-macros = { path = "crates/bq-runner-macros" }
 tokio = { version = "1", features = ["full", "sync"] }
 axum = { version = "0.7", features = ["ws"] }
 yachtsql = { git = "https://github.com/alexchoi-personal/yachtSQL", branch = "v0.1.0" }

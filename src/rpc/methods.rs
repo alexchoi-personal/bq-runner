@@ -1,12 +1,34 @@
 use std::sync::Arc;
 
-use bq_runner_macros::rpc;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
+
+pub trait HasSessionId {
+    fn session_id(&self) -> &str;
+}
+
+macro_rules! impl_has_session_id {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl HasSessionId for $t {
+                fn session_id(&self) -> &str {
+                    &self.session_id
+                }
+            }
+        )*
+    };
+}
+
+fn parse_session_params<T: DeserializeOwned + HasSessionId>(params: Value) -> Result<(T, Uuid)> {
+    let p: T = serde_json::from_value(params)?;
+    let session_id = parse_uuid(p.session_id())?;
+    Ok((p, session_id))
+}
 
 use super::types::{
     ClearDagParams, ClearDagResult, ColumnDef, CreateSessionResult, CreateTableParams,
@@ -20,6 +42,15 @@ use super::types::{
     RegisterDagResult, RetryDagParams, RunDagParams, RunDagResult, SetDefaultProjectParams,
     SetDefaultProjectResult, TableErrorInfo, TableInfo,
 };
+
+impl_has_session_id!(
+    DestroySessionParams,
+    GetDagParams,
+    GetDefaultProjectParams,
+    GetProjectsParams,
+    GetDatasetsParams,
+    GetTablesInDatasetParams,
+);
 
 pub struct RpcMethods {
     session_manager: Arc<SessionManager>,
@@ -58,9 +89,8 @@ impl RpcMethods {
         }
     }
 
-    #[rpc]
-    fn ping() -> PingResult {
-        PingResult { message: "pong".to_string() }
+    async fn ping(&self, _params: Value) -> Result<Value> {
+        Ok(json!(PingResult { message: "pong".to_string() }))
     }
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
@@ -71,10 +101,10 @@ impl RpcMethods {
         }))
     }
 
-    #[rpc(session)]
-    fn destroy_session(p: DestroySessionParams) -> DestroySessionResult {
-        sm.destroy_session(session_id)?;
-        DestroySessionResult { success: true }
+    async fn destroy_session(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<DestroySessionParams>(params)?;
+        self.session_manager.destroy_session(session_id)?;
+        Ok(json!(DestroySessionResult { success: true }))
     }
 
     async fn query(&self, params: Value) -> Result<Value> {
@@ -208,10 +238,10 @@ impl RpcMethods {
         }))
     }
 
-    #[rpc(session)]
-    fn get_dag(p: GetDagParams) -> GetDagResult {
-        let tables = sm.get_dag(session_id)?;
-        GetDagResult { tables }
+    async fn get_dag(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetDagParams>(params)?;
+        let tables = self.session_manager.get_dag(session_id)?;
+        Ok(json!(GetDagResult { tables }))
     }
 
     async fn clear_dag(&self, params: Value) -> Result<Value> {
@@ -281,28 +311,28 @@ impl RpcMethods {
         Ok(json!(SetDefaultProjectResult { success: true }))
     }
 
-    #[rpc(session)]
-    fn get_default_project(p: GetDefaultProjectParams) -> GetDefaultProjectResult {
-        let project = sm.get_default_project(session_id)?;
-        GetDefaultProjectResult { project }
+    async fn get_default_project(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetDefaultProjectParams>(params)?;
+        let project = self.session_manager.get_default_project(session_id)?;
+        Ok(json!(GetDefaultProjectResult { project }))
     }
 
-    #[rpc(session)]
-    fn get_projects(p: GetProjectsParams) -> GetProjectsResult {
-        let projects = sm.get_projects(session_id)?;
-        GetProjectsResult { projects }
+    async fn get_projects(&self, params: Value) -> Result<Value> {
+        let (_, session_id) = parse_session_params::<GetProjectsParams>(params)?;
+        let projects = self.session_manager.get_projects(session_id)?;
+        Ok(json!(GetProjectsResult { projects }))
     }
 
-    #[rpc(session)]
-    fn get_datasets(p: GetDatasetsParams) -> GetDatasetsResult {
-        let datasets = sm.get_datasets(session_id, &p.project)?;
-        GetDatasetsResult { datasets }
+    async fn get_datasets(&self, params: Value) -> Result<Value> {
+        let (p, session_id) = parse_session_params::<GetDatasetsParams>(params)?;
+        let datasets = self.session_manager.get_datasets(session_id, &p.project)?;
+        Ok(json!(GetDatasetsResult { datasets }))
     }
 
-    #[rpc(session)]
-    fn get_tables_in_dataset(p: GetTablesInDatasetParams) -> GetTablesInDatasetResult {
-        let tables = sm.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
-        GetTablesInDatasetResult { tables }
+    async fn get_tables_in_dataset(&self, params: Value) -> Result<Value> {
+        let (p, session_id) = parse_session_params::<GetTablesInDatasetParams>(params)?;
+        let tables = self.session_manager.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
+        Ok(json!(GetTablesInDatasetResult { tables }))
     }
 
     async fn load_sql_directory(&self, params: Value) -> Result<Value> {
