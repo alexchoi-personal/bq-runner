@@ -6,12 +6,12 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::executor::{BigQueryExecutor, Executor, ExecutorMode, QueryResult, YachtSqlExecutor};
+use crate::loader;
 use crate::rpc::types::{
     DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
 };
 
 use super::pipeline::{Pipeline, PipelineResult, TableError};
-use crate::dag_loader;
 
 pub struct SessionManager {
     sessions: RwLock<HashMap<Uuid, Session>>,
@@ -243,7 +243,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<DagTableInfo>, Vec<SqlTableInfo>)> {
-        let sql_files = dag_loader::discover_sql_files(root_path)?;
+        let sql_files = loader::discover_sql_files(root_path)?;
 
         let tables: Vec<DagTableDef> = sql_files
             .iter()
@@ -275,7 +275,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = dag_loader::discover_parquet_files(root_path)?;
+        let parquet_files = loader::discover_parquet_files(root_path)?;
         let executor = self.get_executor(session_id)?;
         self.load_parquet_files_parallel(executor, parquet_files)
             .await
@@ -284,7 +284,7 @@ impl SessionManager {
     async fn load_parquet_files_parallel(
         &self,
         executor: Arc<Executor>,
-        parquet_files: Vec<dag_loader::ParquetFile>,
+        parquet_files: Vec<loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
         let mut handles = Vec::new();
 
@@ -321,7 +321,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<ParquetTableInfo>, Vec<SqlTableInfo>, Vec<DagTableInfo>)> {
-        let discovered = dag_loader::discover_files(root_path)?;
+        let discovered = loader::discover_files(root_path)?;
         let executor = self.get_executor(session_id)?;
         let parquet_results = self
             .load_parquet_files_parallel(executor, discovered.parquet_files)
