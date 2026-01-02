@@ -7,8 +7,13 @@ use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
 
-macro_rules! rpc_method {
-    (session: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
+macro_rules! rpc {
+    (fn $name:ident() -> $ret:ty $body:block) => {
+        async fn $name(&self, _params: Value) -> Result<Value> {
+            Ok(json!($body))
+        }
+    };
+    (fn $name:ident($p:ident: $params_type:ty) -> $ret:ty |$sm:ident, $sid:ident| $body:expr) => {
         async fn $name(&self, params: Value) -> Result<Value> {
             let $p: $params_type = serde_json::from_value(params)?;
             let $sid = parse_uuid(&$p.session_id)?;
@@ -16,16 +21,10 @@ macro_rules! rpc_method {
             Ok(json!($body))
         }
     };
-    (session_async: $name:ident, $params_type:ty, |$sm:ident, $sid:ident, $p:ident| $body:expr) => {
+    (async fn $name:ident($p:ident: $params_type:ty) -> $ret:ty |$sm:ident, $sid:ident| $body:expr) => {
         async fn $name(&self, params: Value) -> Result<Value> {
             let $p: $params_type = serde_json::from_value(params)?;
             let $sid = parse_uuid(&$p.session_id)?;
-            let $sm = &self.session_manager;
-            Ok(json!($body.await?))
-        }
-    };
-    (no_session: $name:ident, |$sm:ident| $body:expr) => {
-        async fn $name(&self, _params: Value) -> Result<Value> {
             let $sm = &self.session_manager;
             Ok(json!($body))
         }
@@ -82,8 +81,8 @@ impl RpcMethods {
         }
     }
 
-    rpc_method!(no_session: ping, |_sm| PingResult {
-        message: "pong".to_string()
+    rpc!(fn ping() -> PingResult {
+        PingResult { message: "pong".to_string() }
     });
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
@@ -94,7 +93,7 @@ impl RpcMethods {
         }))
     }
 
-    rpc_method!(session: destroy_session, DestroySessionParams, |sm, session_id, _p| {
+    rpc!(fn destroy_session(p: DestroySessionParams) -> DestroySessionResult |sm, session_id| {
         sm.destroy_session(session_id)?;
         DestroySessionResult { success: true }
     });
@@ -230,7 +229,7 @@ impl RpcMethods {
         }))
     }
 
-    rpc_method!(session: get_dag, GetDagParams, |sm, session_id, _p| {
+    rpc!(fn get_dag(p: GetDagParams) -> GetDagResult |sm, session_id| {
         let tables = sm.get_dag(session_id)?;
         GetDagResult { tables }
     });
@@ -302,22 +301,22 @@ impl RpcMethods {
         Ok(json!(SetDefaultProjectResult { success: true }))
     }
 
-    rpc_method!(session: get_default_project, GetDefaultProjectParams, |sm, session_id, _p| {
+    rpc!(fn get_default_project(p: GetDefaultProjectParams) -> GetDefaultProjectResult |sm, session_id| {
         let project = sm.get_default_project(session_id)?;
         GetDefaultProjectResult { project }
     });
 
-    rpc_method!(session: get_projects, GetProjectsParams, |sm, session_id, _p| {
+    rpc!(fn get_projects(p: GetProjectsParams) -> GetProjectsResult |sm, session_id| {
         let projects = sm.get_projects(session_id)?;
         GetProjectsResult { projects }
     });
 
-    rpc_method!(session: get_datasets, GetDatasetsParams, |sm, session_id, p| {
+    rpc!(fn get_datasets(p: GetDatasetsParams) -> GetDatasetsResult |sm, session_id| {
         let datasets = sm.get_datasets(session_id, &p.project)?;
         GetDatasetsResult { datasets }
     });
 
-    rpc_method!(session: get_tables_in_dataset, GetTablesInDatasetParams, |sm, session_id, p| {
+    rpc!(fn get_tables_in_dataset(p: GetTablesInDatasetParams) -> GetTablesInDatasetResult |sm, session_id| {
         let tables = sm.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
         GetTablesInDatasetResult { tables }
     });
