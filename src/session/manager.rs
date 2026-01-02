@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
+use crate::validation::{quote_identifier, validate_table_name};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
@@ -209,6 +210,47 @@ impl SessionManager {
         };
         pipeline.clear(executor.as_ref()).await;
         Ok(())
+    }
+
+    pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
+        validate_table_name(name)?;
+        self.with_session_mut(session_id, |session| session.pipeline.register_table(name, sql))
+    }
+
+    pub async fn drop_table(&self, session_id: Uuid, name: &str) -> Result<()> {
+        validate_table_name(name)?;
+        let executor = self.get_executor(session_id)?;
+
+        let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(name));
+        executor.execute_statement(&drop_sql).await?;
+
+        self.with_session_mut(session_id, |session| {
+            session.pipeline.remove_table(name);
+            Ok(())
+        })
+    }
+
+    pub async fn drop_all_tables(&self, session_id: Uuid) -> Result<()> {
+        let (executor, table_names) = {
+            let sessions = self.sessions.read();
+            let session = sessions
+                .get(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            (
+                Arc::clone(&session.executor),
+                session.pipeline.table_names(),
+            )
+        };
+
+        for name in &table_names {
+            let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(name));
+            let _ = executor.execute_statement(&drop_sql).await;
+        }
+
+        self.with_session_mut(session_id, |session| {
+            session.pipeline.clear_state();
+            Ok(())
+        })
     }
 
     pub async fn load_parquet(
