@@ -2,10 +2,16 @@ mod bigquery;
 pub mod converters;
 mod yachtsql;
 
+#[cfg(test)]
+mod test_counting;
+
 pub use self::bigquery::BigQueryExecutor;
 pub(crate) use self::yachtsql::MockExecutorExt;
 pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
 pub use crate::domain::ColumnDef;
+
+#[cfg(test)]
+pub use self::test_counting::TestCountingExecutor;
 
 use crate::error::Result;
 use async_trait::async_trait;

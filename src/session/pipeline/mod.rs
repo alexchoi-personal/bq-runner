@@ -249,20 +249,16 @@ impl Pipeline {
         state: &Arc<Mutex<StreamState>>,
         tx: &mpsc::Sender<(String, Result<()>)>,
     ) {
-        let ready: Vec<String> = {
-            let s = state.lock();
-            s.ready_tables()
+        let ready_to_spawn: Vec<String> = {
+            let mut s = state.lock();
+            let ready = s.ready_tables();
+            for name in &ready {
+                s.mark_in_flight(name);
+            }
+            ready
         };
 
-        for name in ready {
-            {
-                let mut s = state.lock();
-                if !s.is_pending(&name) {
-                    continue;
-                }
-                s.mark_in_flight(&name);
-            }
-
+        for name in ready_to_spawn {
             let executor = Arc::clone(executor);
             let table = self.tables.get(&name).cloned();
             let tx = tx.clone();
@@ -1940,5 +1936,84 @@ mod tests {
     fn test_no_cte() {
         let ctes = extract_cte_names("SELECT * FROM users");
         assert!(ctes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_no_duplicate_execution_under_contention() {
+        use std::sync::atomic::AtomicUsize;
+
+        let execution_counts: Arc<HashMap<String, AtomicUsize>> = Arc::new(
+            (0..10)
+                .map(|i| (format!("table_{}", i), AtomicUsize::new(0)))
+                .collect(),
+        );
+
+        let counts_for_executor = Arc::clone(&execution_counts);
+        let executor = Arc::new(crate::executor::TestCountingExecutor::new(move |name| {
+            if let Some(counter) = counts_for_executor.get(name) {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+
+        let mut pipeline = Pipeline::new();
+        for i in 0..10 {
+            pipeline
+                .register(vec![source_table(
+                    &format!("table_{}", i),
+                    vec![("v", "INT64")],
+                    vec![json!([i])],
+                )])
+                .unwrap();
+        }
+
+        let tables: HashSet<String> = pipeline.tables.keys().cloned().collect();
+
+        let pending_deps: HashMap<String, HashSet<String>> = tables
+            .iter()
+            .map(|name| (name.clone(), HashSet::new()))
+            .collect();
+
+        let state = Arc::new(Mutex::new(StreamState {
+            pending_deps,
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency: 10,
+        }));
+
+        let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(20);
+
+        let mut handles = vec![];
+        for _ in 0..8 {
+            let pipeline = pipeline.clone();
+            let executor = Arc::clone(&executor) as Arc<dyn ExecutorBackend>;
+            let state = Arc::clone(&state);
+            let tx = tx.clone();
+            handles.push(tokio::spawn(async move {
+                pipeline.spawn_ready_tables(&executor, &state, &tx);
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        drop(tx);
+
+        let mut received = 0;
+        while rx.recv().await.is_some() {
+            received += 1;
+        }
+
+        assert_eq!(received, 10, "Should have received exactly 10 results");
+
+        for (name, count) in execution_counts.iter() {
+            let c = count.load(Ordering::SeqCst);
+            assert_eq!(
+                c, 1,
+                "Table {} was executed {} times, expected exactly 1",
+                name, c
+            );
+        }
     }
 }
