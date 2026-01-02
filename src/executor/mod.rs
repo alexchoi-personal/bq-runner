@@ -1,4 +1,5 @@
 mod bigquery;
+pub mod converters;
 mod yachtsql;
 
 pub use self::bigquery::BigQueryExecutor;

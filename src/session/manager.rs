@@ -10,8 +10,8 @@ use crate::rpc::types::{
     DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
 };
 
-use crate::dag_loader;
 use super::pipeline::{Pipeline, PipelineResult, TableError};
+use crate::dag_loader;
 
 pub struct SessionManager {
     sessions: RwLock<HashMap<Uuid, Session>>,
