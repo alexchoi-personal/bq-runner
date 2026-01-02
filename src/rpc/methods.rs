@@ -286,10 +286,7 @@ impl RpcMethods {
             name: p.table_name,
             schema: schema
                 .into_iter()
-                .map(|(name, col_type)| ColumnDef {
-                    name,
-                    column_type: col_type,
-                })
+                .map(|(name, col_type)| ColumnDef::from((name, col_type)))
                 .collect(),
             row_count,
         }))

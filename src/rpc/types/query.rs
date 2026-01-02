@@ -86,6 +86,7 @@ pub struct DescribeTableResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ColumnType;
 
     #[test]
     fn test_query_params_deserialization() {
@@ -103,84 +104,84 @@ mod tests {
         assert_eq!(params.table_name, "test_table");
         assert_eq!(params.schema.len(), 1);
         assert_eq!(params.schema[0].name, "id");
-        assert_eq!(params.schema[0].column_type, "INT64");
+        assert_eq!(params.schema[0].column_type, ColumnType::Int64);
     }
 
     #[test]
     fn test_column_def_new() {
-        let col = ColumnDef::new("id", "INT64");
+        let col = ColumnDef::new("id", ColumnType::Int64);
         assert_eq!(col.name, "id");
-        assert_eq!(col.column_type, "INT64");
+        assert_eq!(col.column_type, ColumnType::Int64);
     }
 
     #[test]
     fn test_column_def_int64() {
         let col = ColumnDef::int64("id");
         assert_eq!(col.name, "id");
-        assert_eq!(col.column_type, "INT64");
+        assert_eq!(col.column_type, ColumnType::Int64);
     }
 
     #[test]
     fn test_column_def_string() {
         let col = ColumnDef::string("name");
         assert_eq!(col.name, "name");
-        assert_eq!(col.column_type, "STRING");
+        assert_eq!(col.column_type, ColumnType::String);
     }
 
     #[test]
     fn test_column_def_float64() {
         let col = ColumnDef::float64("price");
         assert_eq!(col.name, "price");
-        assert_eq!(col.column_type, "FLOAT64");
+        assert_eq!(col.column_type, ColumnType::Float64);
     }
 
     #[test]
     fn test_column_def_bool() {
         let col = ColumnDef::bool("active");
         assert_eq!(col.name, "active");
-        assert_eq!(col.column_type, "BOOLEAN");
+        assert_eq!(col.column_type, ColumnType::Bool);
     }
 
     #[test]
     fn test_column_def_date() {
         let col = ColumnDef::date("created_at");
         assert_eq!(col.name, "created_at");
-        assert_eq!(col.column_type, "DATE");
+        assert_eq!(col.column_type, ColumnType::Date);
     }
 
     #[test]
     fn test_column_def_timestamp() {
         let col = ColumnDef::timestamp("updated_at");
         assert_eq!(col.name, "updated_at");
-        assert_eq!(col.column_type, "TIMESTAMP");
+        assert_eq!(col.column_type, ColumnType::Timestamp);
     }
 
     #[test]
     fn test_column_def_numeric() {
         let col = ColumnDef::numeric("amount");
         assert_eq!(col.name, "amount");
-        assert_eq!(col.column_type, "NUMERIC");
+        assert_eq!(col.column_type, ColumnType::Numeric);
     }
 
     #[test]
     fn test_column_def_bytes() {
         let col = ColumnDef::bytes("data");
         assert_eq!(col.name, "data");
-        assert_eq!(col.column_type, "BYTES");
+        assert_eq!(col.column_type, ColumnType::Bytes);
     }
 
     #[test]
     fn test_column_def_from_string_tuple() {
         let col: ColumnDef = ("name".to_string(), "STRING".to_string()).into();
         assert_eq!(col.name, "name");
-        assert_eq!(col.column_type, "STRING");
+        assert_eq!(col.column_type, ColumnType::String);
     }
 
     #[test]
     fn test_column_def_from_str_tuple() {
         let col: ColumnDef = ("id", "INT64").into();
         assert_eq!(col.name, "id");
-        assert_eq!(col.column_type, "INT64");
+        assert_eq!(col.column_type, ColumnType::Int64);
     }
 
     #[test]

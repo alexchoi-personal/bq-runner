@@ -561,27 +561,27 @@ mod tests {
         let bq_schema = vec![
             crate::domain::ColumnDef {
                 name: "id".to_string(),
-                column_type: "INT64".to_string(),
+                column_type: crate::domain::ColumnType::Int64,
             },
             crate::domain::ColumnDef {
                 name: "name".to_string(),
-                column_type: "STRING".to_string(),
+                column_type: crate::domain::ColumnType::String,
             },
             crate::domain::ColumnDef {
                 name: "score".to_string(),
-                column_type: "FLOAT64".to_string(),
+                column_type: crate::domain::ColumnType::Float64,
             },
             crate::domain::ColumnDef {
                 name: "active".to_string(),
-                column_type: "BOOL".to_string(),
+                column_type: crate::domain::ColumnType::Bool,
             },
             crate::domain::ColumnDef {
                 name: "created_date".to_string(),
-                column_type: "DATE".to_string(),
+                column_type: crate::domain::ColumnType::Date,
             },
             crate::domain::ColumnDef {
                 name: "updated_at".to_string(),
-                column_type: "TIMESTAMP".to_string(),
+                column_type: crate::domain::ColumnType::Timestamp,
             },
         ];
 

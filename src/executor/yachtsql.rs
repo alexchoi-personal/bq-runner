@@ -102,7 +102,7 @@ impl YachtSqlExecutor {
                 let mut row_values = Vec::new();
                 for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
                     let col = batch.column(col_idx);
-                    let bq_type = &col_schema.column_type;
+                    let bq_type = col_schema.column_type.as_str();
                     let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_type);
                     row_values.push(value);
                 }

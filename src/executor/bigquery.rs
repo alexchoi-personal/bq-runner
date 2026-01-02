@@ -102,7 +102,7 @@ impl BigQueryExecutor {
                 .iter()
                 .map(|col| TableFieldSchema {
                     name: col.name.clone(),
-                    data_type: string_to_bq_type(&col.column_type),
+                    data_type: string_to_bq_type(col.column_type.as_str()),
                     ..Default::default()
                 })
                 .collect(),

@@ -504,10 +504,7 @@ mod tests {
             schema: Some(
                 schema
                     .into_iter()
-                    .map(|(n, t)| ColumnDef {
-                        name: n.to_string(),
-                        column_type: t.to_string(),
-                    })
+                    .map(|(n, t)| ColumnDef::from((n, t)))
                     .collect(),
             ),
             rows,
