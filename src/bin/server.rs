@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -15,16 +13,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{error, info, Level};
 use tracing_subscriber::EnvFilter;
 
-mod error;
-mod executor;
-mod loader;
-mod rpc;
-mod session;
-mod utils;
-
-use executor::ExecutorMode;
-use rpc::{handle_websocket, process_message, RpcMethods};
-use session::SessionManager;
+use bq_runner::executor::ExecutorMode;
+use bq_runner::rpc::{handle_websocket, process_message, RpcMethods};
+use bq_runner::SessionManager;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum Backend {
