@@ -57,6 +57,15 @@ impl ShardedParseCache {
     fn get_shard(&self, hash: u64) -> &Mutex<ParseCacheShard> {
         &self.shards[(hash as usize) % CACHE_SHARDS]
     }
+
+    #[cfg(test)]
+    fn clear(&self) {
+        for shard in &self.shards {
+            let mut cache = shard.lock();
+            cache.entries.clear();
+            cache.order.clear();
+        }
+    }
 }
 
 static PARSE_CACHE: LazyLock<ShardedParseCache> = LazyLock::new(ShardedParseCache::new);
@@ -89,8 +98,14 @@ fn parse_sql_cached(sql: &str) -> Option<Arc<Vec<Statement>>> {
     Some(statements)
 }
 
+#[cfg(test)]
+pub(crate) fn clear_parse_cache() {
+    PARSE_CACHE.clear();
+}
+
 pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, String>) -> Vec<String> {
     let Some(statements) = parse_sql_cached(sql) else {
+        tracing::warn!(sql_prefix = %sql.chars().take(100).collect::<String>(), "Failed to parse SQL for dependency extraction");
         return vec![];
     };
 

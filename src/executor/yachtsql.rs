@@ -4,6 +4,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
+use tokio::sync::mpsc;
 use yachtsql::{AsyncQueryExecutor, Table};
 
 use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_into_json};
@@ -11,6 +12,8 @@ use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
 use crate::validation::{open_file_secure, quote_identifier};
+
+const PARQUET_CHANNEL_BUFFER: usize = 4;
 
 pub(crate) trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
@@ -64,11 +67,11 @@ impl YachtSqlExecutor {
         schema: &[ColumnDef],
     ) -> Result<u64> {
         let path_buf = PathBuf::from(path);
-        let batches = tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>> {
-            read_parquet_batches(&path_buf)
-        })
-        .await
-        .map_err(|e| Error::Executor(format!("Parquet read task failed: {}", e)))??;
+        let (tx, mut rx) = mpsc::channel::<Result<RecordBatch>>(PARQUET_CHANNEL_BUFFER);
+
+        tokio::task::spawn_blocking(move || {
+            stream_parquet_batches(&path_buf, tx);
+        });
 
         let quoted_table = format!("`{}`", quote_identifier(table_name));
         let columns: Vec<String> = schema
@@ -90,7 +93,9 @@ impl YachtSqlExecutor {
         let mut total_rows = 0u64;
         const INSERT_BATCH_SIZE: usize = 1000;
 
-        for batch in batches {
+        while let Some(batch_result) = rx.recv().await {
+            let batch = batch_result?;
+
             if batch.num_rows() == 0 {
                 continue;
             }
@@ -152,24 +157,53 @@ impl YachtSqlExecutor {
     }
 }
 
-fn read_parquet_batches(path: &Path) -> Result<Vec<RecordBatch>> {
-    let file = open_file_secure(path)
-        .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
+fn stream_parquet_batches(path: &Path, tx: mpsc::Sender<Result<RecordBatch>>) {
+    let file = match open_file_secure(path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to open parquet file: {}",
+                e
+            ))));
+            return;
+        }
+    };
 
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| Error::Executor(format!("Failed to read parquet: {}", e)))?;
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to read parquet: {}",
+                e
+            ))));
+            return;
+        }
+    };
 
-    let reader = builder
-        .build()
-        .map_err(|e| Error::Executor(format!("Failed to build parquet reader: {}", e)))?;
+    let reader = match builder.build() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to build parquet reader: {}",
+                e
+            ))));
+            return;
+        }
+    };
 
-    let mut batches = Vec::new();
     for batch_result in reader {
-        let batch =
-            batch_result.map_err(|e| Error::Executor(format!("Failed to read batch: {}", e)))?;
-        batches.push(batch);
+        let batch = match batch_result {
+            Ok(b) => b,
+            Err(e) => {
+                let _ =
+                    tx.blocking_send(Err(Error::Executor(format!("Failed to read batch: {}", e))));
+                return;
+            }
+        };
+        if tx.blocking_send(Ok(batch)).is_err() {
+            return;
+        }
     }
-    Ok(batches)
 }
 
 impl Default for YachtSqlExecutor {

@@ -180,15 +180,28 @@ impl SessionManager {
             return 0;
         }
 
+        let ids_to_remove: Vec<Uuid> = {
+            let sessions = self.sessions.read();
+            expired_ids
+                .into_iter()
+                .filter(|id| {
+                    sessions
+                        .get(id)
+                        .is_some_and(|s| now.duration_since(s.last_accessed()) > timeout)
+                })
+                .collect()
+        };
+
+        if ids_to_remove.is_empty() {
+            return 0;
+        }
+
         let mut sessions = self.sessions.write();
         let mut removed = 0;
-        for id in expired_ids {
-            if let Some(session) = sessions.get(&id) {
-                if now.duration_since(session.last_accessed()) > timeout {
-                    sessions.remove(&id);
-                    debug!(session_id = %id, "Session expired and removed");
-                    removed += 1;
-                }
+        for id in ids_to_remove {
+            if sessions.remove(&id).is_some() {
+                debug!(session_id = %id, "Session expired and removed");
+                removed += 1;
             }
         }
 

@@ -8,6 +8,9 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("Session not found: {0}")]
     SessionNotFound(uuid::Uuid),
 
@@ -35,6 +38,7 @@ impl Error {
         match self {
             Error::Executor(_) => -32000,
             Error::Json(_) => -32700,
+            Error::Io(_) => -32006,
             Error::SessionNotFound(_) => -32002,
             Error::InvalidRequest(_) => -32600,
             Error::Internal(_) => -32603,

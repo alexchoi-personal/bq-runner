@@ -196,6 +196,13 @@ async fn create_source_table_standalone(
     table: &PipelineTable,
 ) -> Result<()> {
     if let Some(schema) = &table.schema {
+        if schema.is_empty() {
+            return Err(Error::Executor(format!(
+                "Source table '{}' has empty schema",
+                table.name
+            )));
+        }
+
         let quoted_name = format!("`{}`", quote_identifier(&table.name));
         let columns: Vec<String> = schema
             .iter()

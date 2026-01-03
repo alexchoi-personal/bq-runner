@@ -1,5 +1,6 @@
 mod bigquery;
 pub mod converters;
+pub(crate) mod sql_builder;
 mod yachtsql;
 
 #[cfg(test)]
