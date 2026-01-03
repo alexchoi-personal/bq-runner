@@ -7,8 +7,8 @@ mod table;
 pub use core::*;
 pub use query::{
     ColumnDef, CreateTableParams, CreateTableResult, DescribeTableParams, DescribeTableResult,
-    InsertParams, InsertResult, LoadParquetParams, LoadParquetResult, ListTablesResult, QueryParams,
-    TableInfo,
+    InsertParams, InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult,
+    QueryParams, TableInfo,
 };
 pub use session::*;
 pub use table::*;

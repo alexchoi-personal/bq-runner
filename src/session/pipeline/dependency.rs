@@ -34,7 +34,8 @@ pub fn extract_dependencies(
     deps
 }
 
-pub fn extract_cte_names(sql: &str) -> HashSet<String> {
+#[cfg(test)]
+fn extract_cte_names(sql: &str) -> HashSet<String> {
     extract_cte_names_ast(sql)
 }
 
@@ -79,9 +80,8 @@ fn extract_table_references_ast(sql: &str) -> HashSet<String> {
 }
 
 fn collect_tables_from_statement(statement: &Statement, tables: &mut HashSet<String>) {
-    match statement {
-        Statement::Query(query) => collect_tables_from_query(query, tables),
-        _ => {}
+    if let Statement::Query(query) = statement {
+        collect_tables_from_query(query, tables);
     }
 }
 
@@ -101,8 +101,7 @@ fn collect_tables_from_set_expr(body: &SetExpr, tables: &mut HashSet<String>) {
                 collect_tables_from_table_with_joins(table_with_joins, tables);
             }
             for item in &select.projection {
-                if let SelectItem::ExprWithAlias { expr, .. }
-                | SelectItem::UnnamedExpr(expr) = item
+                if let SelectItem::ExprWithAlias { expr, .. } | SelectItem::UnnamedExpr(expr) = item
                 {
                     collect_tables_from_expr(expr, tables);
                 }
@@ -440,7 +439,10 @@ mod tests {
     fn test_extract_dependencies_nested_cte() {
         let mut known_tables = HashMap::new();
         known_tables.insert("base".to_string(), make_pipeline_table("base"));
-        known_tables.insert("intermediate".to_string(), make_pipeline_table("intermediate"));
+        known_tables.insert(
+            "intermediate".to_string(),
+            make_pipeline_table("intermediate"),
+        );
         let sql = "WITH intermediate AS (SELECT * FROM base) SELECT * FROM intermediate";
         let deps = extract_dependencies(sql, &known_tables);
         assert_eq!(deps, vec!["base"]);

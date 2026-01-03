@@ -9,10 +9,13 @@ use tracing::{error, info, warn};
 use super::methods::RpcMethods;
 use super::types::{RpcRequest, RpcResponse};
 use crate::error::Error;
-use crate::metrics::{record_rpc_duration, record_rpc_error, record_rpc_request, record_rpc_success};
+use crate::metrics::{
+    record_rpc_duration, record_rpc_error, record_rpc_request, record_rpc_success,
+};
 
 fn extract_session_id(params: &Option<serde_json::Value>) -> Option<String> {
-    params.as_ref()
+    params
+        .as_ref()
         .and_then(|p| p.get("sessionId"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -87,7 +90,9 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
     let result = match tokio::time::timeout(
         timeout_duration,
         methods.dispatch(&request.method, request.params),
-    ).await {
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(Error::RequestTimeout(timeout_secs)),
     };

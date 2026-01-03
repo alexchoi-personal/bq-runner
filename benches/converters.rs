@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 
 use bq_runner::json_to_sql_value;
@@ -85,11 +85,18 @@ fn bench_json_to_sql_string_escaping(c: &mut Criterion) {
     }
 
     for count in [1, 10, 50] {
-        group.bench_with_input(BenchmarkId::new("quote_count", count), &count, |b, &count| {
-            let s: String = (0..count).map(|i| format!("it's test {}", i)).collect::<Vec<_>>().join(" ");
-            let val = json!(s);
-            b.iter(|| json_to_sql_value(black_box(&val)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("quote_count", count),
+            &count,
+            |b, &count| {
+                let s: String = (0..count)
+                    .map(|i| format!("it's test {}", i))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let val = json!(s);
+                b.iter(|| json_to_sql_value(black_box(&val)))
+            },
+        );
     }
 
     group.finish();

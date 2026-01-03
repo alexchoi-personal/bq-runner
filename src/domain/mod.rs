@@ -476,18 +476,42 @@ mod tests {
 
     #[test]
     fn test_table_status_serialization() {
-        assert_eq!(serde_json::to_string(&TableStatus::Pending).unwrap(), "\"pending\"");
-        assert_eq!(serde_json::to_string(&TableStatus::Running).unwrap(), "\"running\"");
-        assert_eq!(serde_json::to_string(&TableStatus::Succeeded).unwrap(), "\"succeeded\"");
-        assert_eq!(serde_json::to_string(&TableStatus::Failed).unwrap(), "\"failed\"");
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Succeeded).unwrap(),
+            "\"succeeded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Failed).unwrap(),
+            "\"failed\""
+        );
     }
 
     #[test]
     fn test_table_status_deserialization() {
-        assert_eq!(serde_json::from_str::<TableStatus>("\"pending\"").unwrap(), TableStatus::Pending);
-        assert_eq!(serde_json::from_str::<TableStatus>("\"running\"").unwrap(), TableStatus::Running);
-        assert_eq!(serde_json::from_str::<TableStatus>("\"succeeded\"").unwrap(), TableStatus::Succeeded);
-        assert_eq!(serde_json::from_str::<TableStatus>("\"failed\"").unwrap(), TableStatus::Failed);
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"pending\"").unwrap(),
+            TableStatus::Pending
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"running\"").unwrap(),
+            TableStatus::Running
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"succeeded\"").unwrap(),
+            TableStatus::Succeeded
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"failed\"").unwrap(),
+            TableStatus::Failed
+        );
     }
 
     #[test]

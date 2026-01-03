@@ -42,7 +42,8 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
                     })
                     .collect();
 
-                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
+                let insert_sql =
+                    format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
                 executor.execute_statement(&insert_sql).await?;
             }
         }

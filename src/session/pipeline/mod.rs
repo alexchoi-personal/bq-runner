@@ -14,7 +14,7 @@ use crate::executor::{ExecutorBackend, ExecutorMode};
 use crate::validation::quote_identifier;
 
 pub use crate::domain::TableStatus;
-pub use types::{ExecutionPlan, PipelineResult, PipelineTable, TableError};
+pub use types::{PipelineResult, PipelineTable, TableError};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
@@ -485,37 +485,6 @@ impl Pipeline {
     pub fn remove_table(&mut self, name: &str) {
         self.tables.remove(name);
         self.table_status.remove(name);
-    }
-
-    #[allow(dead_code)]
-    pub fn build_execution_plan(
-        &self,
-        targets: Option<Vec<String>>,
-        force: bool,
-    ) -> Result<ExecutionPlan> {
-        let subset = if let Some(targets) = targets {
-            self.get_tables_with_deps_set(&targets)?
-        } else {
-            self.tables.keys().cloned().collect()
-        };
-
-        let filtered: HashSet<String> = if force {
-            subset
-        } else {
-            subset
-                .into_iter()
-                .filter(|name| self.get_table_status(name) != TableStatus::Succeeded)
-                .collect()
-        };
-
-        let levels = self.topological_sort_levels(&filtered)?;
-
-        let tables: Vec<PipelineTable> = filtered
-            .iter()
-            .filter_map(|name| self.tables.get(name).cloned())
-            .collect();
-
-        Ok(ExecutionPlan { tables, levels })
     }
 
     pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {

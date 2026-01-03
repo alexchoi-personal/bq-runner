@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::config::RpcConfig;
@@ -32,18 +33,6 @@ fn parse_session_params<T: DeserializeOwned + HasSessionId>(params: Value) -> Re
     Ok((p, session_id))
 }
 
-use super::types::{
-    ColumnDef, CreateSessionResult, CreateTableParams, CreateTableResult, DescribeTableParams,
-    DescribeTableResult, DestroySessionParams, DestroySessionResult, GetDatasetsParams,
-    GetDatasetsResult, GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams,
-    GetProjectsResult, GetTablesInDatasetParams, GetTablesInDatasetResult, InsertParams,
-    InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult, PingResult, QueryParams,
-    SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
-    DefineTableParams, DefineTableResult, DefineTablesParams, DefineTablesResult,
-    DropTableParams, DropAllTablesParams, ExecuteParams, ExecuteResult,
-    LoadDirectoryParams, LoadDirectoryResult, LoadedTableInfo, HealthResult, TableError,
-    ReadinessResult, LivenessResult, HealthCheck,
-};
 use super::types::dag::{
     ClearDagParams, ClearDagResult, GetDagParams, GetDagResult, LoadDagFromDirectoryParams,
     LoadDagFromDirectoryResult, LoadParquetDirectoryParams, LoadParquetDirectoryResult,
@@ -51,6 +40,17 @@ use super::types::dag::{
     RetryDagParams, RunDagParams, RunDagResult, TableErrorInfo,
 };
 use super::types::query::ListTablesParams as QueryListTablesParams;
+use super::types::{
+    ColumnDef, CreateSessionResult, CreateTableParams, CreateTableResult, DefineTableParams,
+    DefineTableResult, DefineTablesParams, DefineTablesResult, DescribeTableParams,
+    DescribeTableResult, DestroySessionParams, DestroySessionResult, DropAllTablesParams,
+    DropTableParams, ExecuteParams, ExecuteResult, GetDatasetsParams, GetDatasetsResult,
+    GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams, GetProjectsResult,
+    GetTablesInDatasetParams, GetTablesInDatasetResult, HealthCheck, HealthResult, InsertParams,
+    InsertResult, ListTablesResult, LivenessResult, LoadDirectoryParams, LoadDirectoryResult,
+    LoadParquetParams, LoadParquetResult, LoadedTableInfo, PingResult, QueryParams,
+    ReadinessResult, SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
+};
 
 impl_has_session_id!(
     DestroySessionParams,
@@ -69,15 +69,31 @@ pub struct RpcMethods {
 
 impl RpcMethods {
     pub fn new(session_manager: Arc<SessionManager>) -> Self {
-        Self { session_manager, audit_enabled: false, rpc_config: RpcConfig::default() }
+        Self {
+            session_manager,
+            audit_enabled: false,
+            rpc_config: RpcConfig::default(),
+        }
     }
 
     pub fn with_audit(session_manager: Arc<SessionManager>, audit_enabled: bool) -> Self {
-        Self { session_manager, audit_enabled, rpc_config: RpcConfig::default() }
+        Self {
+            session_manager,
+            audit_enabled,
+            rpc_config: RpcConfig::default(),
+        }
     }
 
-    pub fn with_config(session_manager: Arc<SessionManager>, audit_enabled: bool, rpc_config: RpcConfig) -> Self {
-        Self { session_manager, audit_enabled, rpc_config }
+    pub fn with_config(
+        session_manager: Arc<SessionManager>,
+        audit_enabled: bool,
+        rpc_config: RpcConfig,
+    ) -> Self {
+        Self {
+            session_manager,
+            audit_enabled,
+            rpc_config,
+        }
     }
 
     pub fn audit_enabled(&self) -> bool {
@@ -130,7 +146,9 @@ impl RpcMethods {
     }
 
     async fn ping(&self, _params: Value) -> Result<Value> {
-        Ok(json!(PingResult { message: "pong".to_string() }))
+        Ok(json!(PingResult {
+            message: "pong".to_string()
+        }))
     }
 
     async fn health(&self, _params: Value) -> Result<Value> {
@@ -188,7 +206,9 @@ impl RpcMethods {
     async fn define_table(&self, params: Value) -> Result<Value> {
         let p: DefineTableParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
-        let deps = self.session_manager.define_table(session_id, &p.name, &p.sql)?;
+        let deps = self
+            .session_manager
+            .define_table(session_id, &p.name, &p.sql)?;
         Ok(json!(DefineTableResult {
             success: true,
             dependencies: deps,
@@ -200,8 +220,13 @@ impl RpcMethods {
         let session_id = parse_uuid(&p.session_id)?;
         let mut results = Vec::new();
         for t in &p.tables {
-            let deps = self.session_manager.define_table(session_id, &t.name, &t.sql)?;
-            results.push(DefineTableResult { success: true, dependencies: deps });
+            let deps = self
+                .session_manager
+                .define_table(session_id, &t.name, &t.sql)?;
+            results.push(DefineTableResult {
+                success: true,
+                dependencies: deps,
+            });
         }
         Ok(json!(DefineTablesResult {
             success: true,
@@ -237,14 +262,7 @@ impl RpcMethods {
         Ok(json!(ExecuteResult {
             success: result.all_succeeded(),
             succeeded: result.succeeded,
-            failed: result
-                .failed
-                .into_iter()
-                .map(|e| TableError {
-                    table: e.table,
-                    error: e.error,
-                })
-                .collect(),
+            failed: result.failed,
             skipped: result.skipped,
         }))
     }
@@ -349,9 +367,9 @@ impl RpcMethods {
 
         // Determine if rows are objects or arrays based on first row
         let first_row = &p.rows[0];
+        let total_rows = p.rows.len();
         let (column_names, values): (Option<Vec<String>>, Vec<String>) =
             if let Value::Object(first_obj) = first_row {
-                // Object rows: extract column names from first row, use same order for all
                 let cols: Vec<String> = first_obj.keys().cloned().collect();
                 let vals: Vec<String> = p
                     .rows
@@ -368,14 +386,12 @@ impl RpcMethods {
                     .collect();
                 (Some(cols), vals)
             } else {
-                // Array rows: use positional values
                 let vals: Vec<String> = p
                     .rows
                     .iter()
                     .filter_map(|row| {
                         if let Value::Array(arr) = row {
-                            let row_vals: Vec<String> =
-                                arr.iter().map(json_to_sql_value).collect();
+                            let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
                             Some(format!("({})", row_vals.join(", ")))
                         } else {
                             None
@@ -385,11 +401,23 @@ impl RpcMethods {
                 (None, vals)
             };
 
+        let filtered_count = total_rows - values.len();
+        if filtered_count > 0 {
+            warn!(
+                table = %p.table_name,
+                filtered = filtered_count,
+                total = total_rows,
+                "Rows filtered due to inconsistent format"
+            );
+        }
+
         let row_count = values.len() as u64;
         let sql = match column_names {
             Some(cols) => {
-                let quoted_cols: Vec<String> =
-                    cols.iter().map(|c| format!("`{}`", quote_identifier(c))).collect();
+                let quoted_cols: Vec<String> = cols
+                    .iter()
+                    .map(|c| format!("`{}`", quote_identifier(c)))
+                    .collect();
                 format!(
                     "INSERT INTO {} ({}) VALUES {}",
                     p.table_name,
@@ -566,7 +594,9 @@ impl RpcMethods {
 
     async fn get_tables_in_dataset(&self, params: Value) -> Result<Value> {
         let (p, session_id) = parse_session_params::<GetTablesInDatasetParams>(params)?;
-        let tables = self.session_manager.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
+        let tables = self
+            .session_manager
+            .get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
         Ok(json!(GetTablesInDatasetResult { tables }))
     }
 
@@ -946,7 +976,8 @@ mod tests {
     #[test]
     fn test_clear_dag_params_parsing() {
         let params_json = r#"{"sessionId":"abc"}"#;
-        let params: crate::rpc::types::dag::ClearDagParams = serde_json::from_str(params_json).unwrap();
+        let params: crate::rpc::types::dag::ClearDagParams =
+            serde_json::from_str(params_json).unwrap();
         assert_eq!(params.session_id, "abc");
     }
 

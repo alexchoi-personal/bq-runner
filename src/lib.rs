@@ -17,8 +17,8 @@ pub use executor::{
     BigQueryExecutor, ColumnInfo, ExecutorBackend, ExecutorMode, QueryResult, YachtSqlExecutor,
 };
 pub use loader::{
-    discover_files, discover_parquet_files, discover_sql_files, DiscoveredFiles, FileLoader,
-    LoadedFile, ParquetFile, SqlFile, SqlLoader,
+    discover_files_secure, discover_parquet_files_secure, discover_sql_files_secure,
+    DiscoveredFiles, FileLoader, LoadedFile, ParquetFile, SqlFile, SqlLoader,
 };
 pub use session::{Pipeline, SessionManager};
 pub use validation::{

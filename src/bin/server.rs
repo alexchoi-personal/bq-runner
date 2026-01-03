@@ -11,16 +11,16 @@ use axum::{
     Json, Router,
 };
 use clap::{Parser, ValueEnum};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal;
 use tokio::sync::watch;
-use tracing::{error, info, Level};
-use tracing_subscriber::EnvFilter;
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tracing::{error, info, Level};
+use tracing_subscriber::EnvFilter;
 
 use bq_runner::executor::ExecutorMode;
 use bq_runner::rpc::{handle_websocket, process_message, RpcMethods};
@@ -124,13 +124,11 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(&config);
 
     let executor_mode: ExecutorMode = args.backend.into();
-    let session_manager = Arc::new(
-        SessionManager::with_full_config(
-            executor_mode,
-            config.security.clone(),
-            config.session.clone(),
-        )
-    );
+    let session_manager = Arc::new(SessionManager::with_full_config(
+        executor_mode,
+        config.security.clone(),
+        config.session.clone(),
+    ));
     let methods = Arc::new(RpcMethods::with_config(
         Arc::clone(&session_manager),
         config.logging.audit_enabled,
@@ -195,9 +193,7 @@ fn init_tracing(config: &Config) {
                 .init();
         }
         LogFormat::Text => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
 }
@@ -285,7 +281,11 @@ async fn run_stdio_server(methods: Arc<RpcMethods>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>, config: &Config) -> anyhow::Result<()> {
+async fn run_unix_server(
+    path: &PathBuf,
+    methods: Arc<RpcMethods>,
+    config: &Config,
+) -> anyhow::Result<()> {
     use governor::{Quota, RateLimiter};
     use std::num::NonZeroU32;
 
@@ -304,8 +304,10 @@ async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>, config: &Conf
     );
 
     // Create a shared rate limiter for all connections
-    let quota = Quota::per_second(NonZeroU32::new(rate_limit_per_second as u32).unwrap_or(NonZeroU32::new(100).unwrap()))
-        .allow_burst(NonZeroU32::new(rate_limit_burst).unwrap_or(NonZeroU32::new(200).unwrap()));
+    let quota = Quota::per_second(
+        NonZeroU32::new(rate_limit_per_second as u32).unwrap_or(NonZeroU32::new(100).unwrap()),
+    )
+    .allow_burst(NonZeroU32::new(rate_limit_burst).unwrap_or(NonZeroU32::new(200).unwrap()));
     let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
     let (shutdown_tx, _) = watch::channel(false);
@@ -426,8 +428,16 @@ async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>, config: &Conf
     Ok(())
 }
 
-async fn run_http_server(port: u16, methods: Arc<RpcMethods>, metrics_handle: PrometheusHandle, config: &Config) -> anyhow::Result<()> {
-    let state = AppState { methods, metrics_handle };
+async fn run_http_server(
+    port: u16,
+    methods: Arc<RpcMethods>,
+    metrics_handle: PrometheusHandle,
+    config: &Config,
+) -> anyhow::Result<()> {
+    let state = AppState {
+        methods,
+        metrics_handle,
+    };
 
     let rate_limit_per_second = config.rpc.rate_limit_per_second;
     let rate_limit_burst = config.rpc.rate_limit_burst;
@@ -437,7 +447,7 @@ async fn run_http_server(port: u16, methods: Arc<RpcMethods>, metrics_handle: Pr
             .per_second(rate_limit_per_second)
             .burst_size(rate_limit_burst)
             .finish()
-            .expect("Failed to build governor config")
+            .expect("Failed to build governor config"),
     );
     let governor_limiter = governor_conf.limiter().clone();
 
@@ -447,14 +457,16 @@ async fn run_http_server(port: u16, methods: Arc<RpcMethods>, metrics_handle: Pr
         .route("/ready", get(readiness_handler))
         .route("/live", get(liveness_handler))
         .route("/metrics", get(metrics_handler))
-        .layer(
-            ServiceBuilder::new()
-                .layer(GovernorLayer { config: Arc::clone(&governor_conf) })
-        )
+        .layer(ServiceBuilder::new().layer(GovernorLayer {
+            config: Arc::clone(&governor_conf),
+        }))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Listening on ws://{} (rate limit: {} req/s, burst: {})", addr, rate_limit_per_second, rate_limit_burst);
+    info!(
+        "Listening on ws://{} (rate limit: {} req/s, burst: {})",
+        addr, rate_limit_per_second, rate_limit_burst
+    );
 
     tokio::spawn(async move {
         loop {
@@ -521,7 +533,12 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match state.methods.session_manager().check_executor_health().await {
+    match state
+        .methods
+        .session_manager()
+        .check_executor_health()
+        .await
+    {
         Ok(()) => (
             StatusCode::OK,
             Json(json!({

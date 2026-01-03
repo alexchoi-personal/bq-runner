@@ -4,20 +4,22 @@ use regex::Regex;
 use sqlparser::ast::{Expr, Query, SelectItem, SetExpr, Statement, TableFactor};
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub use crate::config::SecurityConfig as SecurityConfigReexport;
 
-static TABLE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$").unwrap()
-});
+static TABLE_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$").unwrap());
 
 pub fn validate_table_name(name: &str) -> Result<()> {
     if name.len() > 128 || !TABLE_NAME_REGEX.is_match(name) {
-        return Err(Error::InvalidRequest(format!("Invalid table name: {}", name)));
+        return Err(Error::InvalidRequest(format!(
+            "Invalid table name: {}",
+            name
+        )));
     }
     Ok(())
 }
@@ -57,36 +59,24 @@ pub fn validate_sql_for_query(sql: &str) -> Result<()> {
         Statement::CreateTable { .. } => Err(Error::InvalidRequest(
             "CREATE TABLE not allowed via query endpoint; use bq.createTable".into(),
         )),
-        Statement::CreateView { .. } => Err(Error::InvalidRequest(
-            "CREATE VIEW not allowed".into(),
-        )),
-        Statement::CreateIndex(_) => Err(Error::InvalidRequest(
-            "CREATE INDEX not allowed".into(),
-        )),
-        Statement::CreateSchema { .. } => Err(Error::InvalidRequest(
-            "CREATE SCHEMA not allowed".into(),
-        )),
+        Statement::CreateView { .. } => {
+            Err(Error::InvalidRequest("CREATE VIEW not allowed".into()))
+        }
+        Statement::CreateIndex(_) => Err(Error::InvalidRequest("CREATE INDEX not allowed".into())),
+        Statement::CreateSchema { .. } => {
+            Err(Error::InvalidRequest("CREATE SCHEMA not allowed".into()))
+        }
         Statement::Drop { .. } => Err(Error::InvalidRequest(
             "DROP statements not allowed via query endpoint".into(),
         )),
-        Statement::AlterTable { .. } => Err(Error::InvalidRequest(
-            "ALTER TABLE not allowed".into(),
-        )),
-        Statement::Truncate { .. } => Err(Error::InvalidRequest(
-            "TRUNCATE not allowed".into(),
-        )),
-        Statement::Merge { .. } => Err(Error::InvalidRequest(
-            "MERGE not allowed".into(),
-        )),
-        Statement::Call(_) => Err(Error::InvalidRequest(
-            "CALL not allowed".into(),
-        )),
-        Statement::Grant { .. } => Err(Error::InvalidRequest(
-            "GRANT not allowed".into(),
-        )),
-        Statement::Revoke { .. } => Err(Error::InvalidRequest(
-            "REVOKE not allowed".into(),
-        )),
+        Statement::AlterTable { .. } => {
+            Err(Error::InvalidRequest("ALTER TABLE not allowed".into()))
+        }
+        Statement::Truncate { .. } => Err(Error::InvalidRequest("TRUNCATE not allowed".into())),
+        Statement::Merge { .. } => Err(Error::InvalidRequest("MERGE not allowed".into())),
+        Statement::Call(_) => Err(Error::InvalidRequest("CALL not allowed".into())),
+        Statement::Grant { .. } => Err(Error::InvalidRequest("GRANT not allowed".into())),
+        Statement::Revoke { .. } => Err(Error::InvalidRequest("REVOKE not allowed".into())),
         _ => Err(Error::InvalidRequest(
             "Statement type not allowed via query endpoint".into(),
         )),
@@ -114,7 +104,9 @@ pub fn validate_sql_for_define_table(sql: &str) -> Result<()> {
             validate_query_recursive(query)?;
             Ok(())
         }
-        Statement::Merge { .. } => Err(Error::InvalidRequest("MERGE statements not allowed".into())),
+        Statement::Merge { .. } => {
+            Err(Error::InvalidRequest("MERGE statements not allowed".into()))
+        }
         Statement::Call(_) => Err(Error::InvalidRequest("CALL statements not allowed".into())),
         _ => Err(Error::InvalidRequest(
             "Only SELECT statements allowed in defineTable".into(),
@@ -175,7 +167,9 @@ fn validate_set_expr(body: &SetExpr) -> Result<()> {
 fn validate_table_factor(tf: &TableFactor) -> Result<()> {
     match tf {
         TableFactor::Derived { subquery, .. } => validate_query_recursive(subquery),
-        TableFactor::NestedJoin { table_with_joins, .. } => {
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
             validate_table_factor(&table_with_joins.relation)?;
             for join in &table_with_joins.joins {
                 validate_table_factor(&join.relation)?;
@@ -308,8 +302,7 @@ pub fn open_file_secure(path: &Path) -> Result<std::fs::File> {
 
 #[cfg(not(unix))]
 pub fn open_file_secure(path: &Path) -> Result<std::fs::File> {
-    std::fs::File::open(path)
-        .map_err(|e| Error::InvalidRequest(format!("Cannot open file: {}", e)))
+    std::fs::File::open(path).map_err(|e| Error::InvalidRequest(format!("Cannot open file: {}", e)))
 }
 
 #[cfg(test)]
@@ -392,17 +385,15 @@ mod tests {
 
     #[test]
     fn test_sql_select_with_subquery_allowed() {
-        assert!(
-            validate_sql_for_define_table("SELECT * FROM (SELECT 1 AS id) AS sub").is_ok()
-        );
+        assert!(validate_sql_for_define_table("SELECT * FROM (SELECT 1 AS id) AS sub").is_ok());
     }
 
     #[test]
     fn test_sql_select_with_joins_allowed() {
-        assert!(validate_sql_for_define_table(
-            "SELECT a.id, b.name FROM a JOIN b ON a.id = b.id"
-        )
-        .is_ok());
+        assert!(
+            validate_sql_for_define_table("SELECT a.id, b.name FROM a JOIN b ON a.id = b.id")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -504,20 +495,18 @@ mod tests {
 
     #[test]
     fn test_sql_case_expression_allowed() {
-        assert!(
-            validate_sql_for_define_table(
-                "SELECT CASE WHEN x > 0 THEN 'pos' ELSE 'neg' END FROM t"
-            )
-            .is_ok()
-        );
+        assert!(validate_sql_for_define_table(
+            "SELECT CASE WHEN x > 0 THEN 'pos' ELSE 'neg' END FROM t"
+        )
+        .is_ok());
     }
 
     #[test]
     fn test_sql_function_call_allowed() {
-        assert!(
-            validate_sql_for_define_table("SELECT COUNT(*), SUM(amount), AVG(price) FROM orders")
-                .is_ok()
-        );
+        assert!(validate_sql_for_define_table(
+            "SELECT COUNT(*), SUM(amount), AVG(price) FROM orders"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -611,7 +600,7 @@ mod tests {
     #[test]
     fn test_query_merge_blocked() {
         let result = validate_sql_for_query(
-            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = s.x"
+            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = s.x",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("MERGE"));
@@ -689,7 +678,10 @@ mod tests {
 
         let result = validate_path(file_path.to_str().unwrap(), &config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Path access denied"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Path access denied"));
     }
 
     #[test]
@@ -744,7 +736,10 @@ mod tests {
 
         let result = validate_path(link.to_str().unwrap(), &config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Symlinks not allowed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Symlinks not allowed"));
     }
 
     #[test]
@@ -796,6 +791,6 @@ mod tests {
     fn test_security_config_default() {
         let config = SecurityConfig::default();
         assert!(config.allowed_paths.is_empty());
-        assert!(config.block_symlinks);  // Default is true (secure by default)
+        assert!(config.block_symlinks); // Default is true (secure by default)
     }
 }

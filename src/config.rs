@@ -1,7 +1,7 @@
+use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tracing::warn;
-use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,8 +129,9 @@ impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let mut config = match path {
             Some(p) => {
-                let contents = std::fs::read_to_string(p)
-                    .map_err(|e| Error::InvalidRequest(format!("Cannot read config file: {}", e)))?;
+                let contents = std::fs::read_to_string(p).map_err(|e| {
+                    Error::InvalidRequest(format!("Cannot read config file: {}", e))
+                })?;
                 toml::from_str(&contents)
                     .map_err(|e| Error::InvalidRequest(format!("Invalid config file: {}", e)))?
             }
@@ -155,31 +156,46 @@ impl Config {
         if let Ok(val) = std::env::var("BQ_RUNNER_MAX_SESSIONS") {
             match val.parse() {
                 Ok(n) => config.session.max_sessions = n,
-                Err(_) => warn!("Invalid BQ_RUNNER_MAX_SESSIONS value '{}', using default", val),
+                Err(_) => warn!(
+                    "Invalid BQ_RUNNER_MAX_SESSIONS value '{}', using default",
+                    val
+                ),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_SESSION_TIMEOUT_SECS") {
             match val.parse() {
                 Ok(n) => config.session.session_timeout_secs = n,
-                Err(_) => warn!("Invalid BQ_RUNNER_SESSION_TIMEOUT_SECS value '{}', using default", val),
+                Err(_) => warn!(
+                    "Invalid BQ_RUNNER_SESSION_TIMEOUT_SECS value '{}', using default",
+                    val
+                ),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_REQUEST_TIMEOUT_SECS") {
             match val.parse() {
                 Ok(n) => config.rpc.request_timeout_secs = n,
-                Err(_) => warn!("Invalid BQ_RUNNER_REQUEST_TIMEOUT_SECS value '{}', using default", val),
+                Err(_) => warn!(
+                    "Invalid BQ_RUNNER_REQUEST_TIMEOUT_SECS value '{}', using default",
+                    val
+                ),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_PER_SECOND") {
             match val.parse() {
                 Ok(n) => config.rpc.rate_limit_per_second = n,
-                Err(_) => warn!("Invalid BQ_RUNNER_RATE_LIMIT_PER_SECOND value '{}', using default", val),
+                Err(_) => warn!(
+                    "Invalid BQ_RUNNER_RATE_LIMIT_PER_SECOND value '{}', using default",
+                    val
+                ),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_BURST") {
             match val.parse() {
                 Ok(n) => config.rpc.rate_limit_burst = n,
-                Err(_) => warn!("Invalid BQ_RUNNER_RATE_LIMIT_BURST value '{}', using default", val),
+                Err(_) => warn!(
+                    "Invalid BQ_RUNNER_RATE_LIMIT_BURST value '{}', using default",
+                    val
+                ),
             }
         }
 
@@ -242,7 +258,9 @@ mod tests {
     #[test]
     fn test_config_load_valid_toml() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"
+        writeln!(
+            file,
+            r#"
 [security]
 allowed_paths = ["/data", "/workspace"]
 block_symlinks = false
@@ -250,7 +268,9 @@ block_symlinks = false
 [logging]
 format = "json"
 audit_enabled = true
-"#).unwrap();
+"#
+        )
+        .unwrap();
 
         let config = Config::load(Some(file.path())).unwrap();
         assert_eq!(config.security.allowed_paths.len(), 2);
@@ -370,12 +390,16 @@ audit_enabled = true
     #[test]
     fn test_config_load_with_rpc_section() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"
+        writeln!(
+            file,
+            r#"
 [rpc]
 request_timeout_secs = 120
 rate_limit_per_second = 50
 rate_limit_burst = 100
-"#).unwrap();
+"#
+        )
+        .unwrap();
 
         let config = Config::load(Some(file.path())).unwrap();
         assert_eq!(config.rpc.request_timeout_secs, 120);
@@ -386,42 +410,60 @@ rate_limit_burst = 100
     #[test]
     fn test_config_validate_zero_timeout_fails() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"
+        writeln!(
+            file,
+            r#"
 [rpc]
 request_timeout_secs = 0
-"#).unwrap();
+"#
+        )
+        .unwrap();
 
         let result = Config::load(Some(file.path()));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("request_timeout_secs must be greater than 0"));
+        assert!(err
+            .to_string()
+            .contains("request_timeout_secs must be greater than 0"));
     }
 
     #[test]
     fn test_config_validate_zero_rate_limit_fails() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"
+        writeln!(
+            file,
+            r#"
 [rpc]
 rate_limit_per_second = 0
-"#).unwrap();
+"#
+        )
+        .unwrap();
 
         let result = Config::load(Some(file.path()));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("rate_limit_per_second must be greater than 0"));
+        assert!(err
+            .to_string()
+            .contains("rate_limit_per_second must be greater than 0"));
     }
 
     #[test]
     fn test_config_validate_zero_burst_fails() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"
+        writeln!(
+            file,
+            r#"
 [rpc]
 rate_limit_burst = 0
-"#).unwrap();
+"#
+        )
+        .unwrap();
 
         let result = Config::load(Some(file.path()));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("rate_limit_burst must be greater than 0"));
+        assert!(err
+            .to_string()
+            .contains("rate_limit_burst must be greater than 0"));
     }
 }

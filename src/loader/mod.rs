@@ -102,7 +102,8 @@ pub fn discover_files_secure(root_path: &str, config: &SecurityConfig) -> Result
     discover_files_internal(&validated_root)
 }
 
-pub fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
+#[cfg(test)]
+fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
     let root = Path::new(root_path);
     discover_files_internal(root)
 }
@@ -172,7 +173,8 @@ fn discover_files_internal(root: &Path) -> Result<DiscoveredFiles> {
     })
 }
 
-pub fn discover_sql_files(root_path: &str) -> Result<Vec<SqlFile>> {
+#[cfg(test)]
+fn discover_sql_files(root_path: &str) -> Result<Vec<SqlFile>> {
     let discovered = discover_files(root_path)?;
     Ok(discovered.sql_files)
 }
@@ -182,12 +184,16 @@ pub fn discover_sql_files_secure(root_path: &str, config: &SecurityConfig) -> Re
     Ok(discovered.sql_files)
 }
 
-pub fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
+#[cfg(test)]
+fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files(root_path)?;
     Ok(discovered.parquet_files)
 }
 
-pub fn discover_parquet_files_secure(root_path: &str, config: &SecurityConfig) -> Result<Vec<ParquetFile>> {
+pub fn discover_parquet_files_secure(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files_secure(root_path, config)?;
     Ok(discovered.parquet_files)
 }

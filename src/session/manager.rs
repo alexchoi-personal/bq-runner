@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,15 +11,17 @@ use uuid::Uuid;
 use crate::config::{SecurityConfig, SessionConfig};
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
-use crate::metrics::{
-    record_dag_execution, record_query_executed, record_session_created, record_session_destroyed,
-    record_tables_defined, set_active_sessions,
-};
-use crate::validation::{quote_identifier, validate_path, validate_sql_for_define_table, validate_table_name};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
 use crate::loader;
+use crate::metrics::{
+    record_dag_execution, record_query_executed, record_session_created, record_session_destroyed,
+    record_tables_defined, set_active_sessions,
+};
+use crate::validation::{
+    quote_identifier, validate_path, validate_sql_for_define_table, validate_table_name,
+};
 
 use super::pipeline::{Pipeline, PipelineResult, TableError};
 
@@ -35,7 +38,33 @@ struct Session {
     executor: Arc<dyn ExecutorBackend>,
     mock_executor: Option<Arc<YachtSqlExecutor>>,
     pipeline: Pipeline,
-    last_accessed: Instant,
+    last_accessed_nanos: AtomicU64,
+    created_at: Instant,
+}
+
+impl Session {
+    fn new(
+        executor: Arc<dyn ExecutorBackend>,
+        mock_executor: Option<Arc<YachtSqlExecutor>>,
+    ) -> Self {
+        Self {
+            executor,
+            mock_executor,
+            pipeline: Pipeline::new(),
+            last_accessed_nanos: AtomicU64::new(0),
+            created_at: Instant::now(),
+        }
+    }
+
+    fn touch(&self) {
+        let nanos = self.created_at.elapsed().as_nanos() as u64;
+        self.last_accessed_nanos.store(nanos, Ordering::Relaxed);
+    }
+
+    fn last_accessed(&self) -> Instant {
+        let nanos = self.last_accessed_nanos.load(Ordering::Relaxed);
+        self.created_at + Duration::from_nanos(nanos)
+    }
 }
 
 impl SessionManager {
@@ -63,13 +92,16 @@ impl SessionManager {
     }
 
     pub async fn check_executor_health(&self) -> Result<()> {
-        let executor = self.health_executor.get_or_try_init(|| async {
-            let executor: Arc<dyn ExecutorBackend> = match self.mode {
-                ExecutorMode::Mock => Arc::new(YachtSqlExecutor::new()),
-                ExecutorMode::BigQuery => Arc::new(BigQueryExecutor::new().await?),
-            };
-            Ok::<_, Error>(executor)
-        }).await?;
+        let executor = self
+            .health_executor
+            .get_or_try_init(|| async {
+                let executor: Arc<dyn ExecutorBackend> = match self.mode {
+                    ExecutorMode::Mock => Arc::new(YachtSqlExecutor::new()),
+                    ExecutorMode::BigQuery => Arc::new(BigQueryExecutor::new().await?),
+                };
+                Ok::<_, Error>(executor)
+            })
+            .await?;
         executor.execute_query("SELECT 1").await.map(|_| ())
     }
 
@@ -124,7 +156,7 @@ impl SessionManager {
         let mut sessions = self.sessions.write();
         let before = sessions.len();
         sessions.retain(|id, session| {
-            let expired = now.duration_since(session.last_accessed) > timeout;
+            let expired = now.duration_since(session.last_accessed()) > timeout;
             if expired {
                 debug!(session_id = %id, "Session expired and removed");
             }
@@ -132,33 +164,30 @@ impl SessionManager {
         });
         let removed = before - sessions.len();
         if removed > 0 {
-            info!(removed = removed, remaining = sessions.len(), "Cleaned up expired sessions");
+            info!(
+                removed = removed,
+                remaining = sessions.len(),
+                "Cleaned up expired sessions"
+            );
         }
         removed
     }
 
-    #[allow(dead_code)]
-    fn touch_session(&self, session_id: Uuid) {
-        if let Some(session) = self.sessions.write().get_mut(&session_id) {
-            session.last_accessed = Instant::now();
-        }
-    }
-
     fn get_executor(&self, session_id: Uuid) -> Result<Arc<dyn ExecutorBackend>> {
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.read();
         let session = sessions
-            .get_mut(&session_id)
+            .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
-        session.last_accessed = Instant::now();
+        session.touch();
         Ok(Arc::clone(&session.executor))
     }
 
     fn get_mock_executor(&self, session_id: Uuid) -> Result<Arc<YachtSqlExecutor>> {
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.read();
         let session = sessions
-            .get_mut(&session_id)
+            .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
-        session.last_accessed = Instant::now();
+        session.touch();
         session
             .mock_executor
             .clone()
@@ -169,11 +198,11 @@ impl SessionManager {
     where
         F: FnOnce(&Session) -> Result<T>,
     {
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.read();
         let session = sessions
-            .get_mut(&session_id)
+            .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
-        session.last_accessed = Instant::now();
+        session.touch();
         f(session)
     }
 
@@ -185,13 +214,11 @@ impl SessionManager {
         let session = sessions
             .get_mut(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
-        session.last_accessed = Instant::now();
+        session.touch();
         f(session)
     }
 
     pub async fn create_session(&self) -> Result<Uuid> {
-        // Check limit before expensive executor creation
-        // This is a preliminary check - we'll check again atomically when inserting
         {
             let sessions = self.sessions.read();
             if sessions.len() >= self.session_config.max_sessions {
@@ -211,16 +238,9 @@ impl SessionManager {
                 }
                 ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
             };
-        let pipeline = Pipeline::new();
 
-        let session = Session {
-            executor,
-            mock_executor,
-            pipeline,
-            last_accessed: Instant::now(),
-        };
+        let session = Session::new(executor, mock_executor);
 
-        // Atomic check-and-insert under write lock to prevent race condition
         let session_count = {
             let mut sessions = self.sessions.write();
             if sessions.len() >= self.session_config.max_sessions {
@@ -367,7 +387,9 @@ impl SessionManager {
     pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
         validate_table_name(name)?;
         validate_sql_for_define_table(sql)?;
-        let result = self.with_session_mut(session_id, |session| session.pipeline.register_table(name, sql));
+        let result = self.with_session_mut(session_id, |session| {
+            session.pipeline.register_table(name, sql)
+        });
         if result.is_ok() {
             record_tables_defined(1);
         }
@@ -419,7 +441,13 @@ impl SessionManager {
     ) -> Result<u64> {
         let validated_path = validate_path(path, &self.security_config)?;
         let executor = self.get_executor(session_id)?;
-        executor.load_parquet(table_name, validated_path.to_string_lossy().as_ref(), schema).await
+        executor
+            .load_parquet(
+                table_name,
+                validated_path.to_string_lossy().as_ref(),
+                schema,
+            )
+            .await
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
@@ -504,7 +532,8 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = loader::discover_parquet_files_secure(root_path, &self.security_config)?;
+        let parquet_files =
+            loader::discover_parquet_files_secure(root_path, &self.security_config)?;
         let executor = self.get_executor(session_id)?;
         self.load_parquet_files_parallel(executor, parquet_files)
             .await
@@ -1405,7 +1434,10 @@ mod tests {
         assert!(s2.is_ok());
         let s3 = manager.create_session().await;
         assert!(s3.is_err());
-        assert!(s3.unwrap_err().to_string().contains("Maximum session limit"));
+        assert!(s3
+            .unwrap_err()
+            .to_string()
+            .contains("Maximum session limit"));
 
         manager.destroy_session(s1.unwrap()).unwrap();
         let s4 = manager.create_session().await;

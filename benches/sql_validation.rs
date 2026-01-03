@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use bq_runner::validation::{
     quote_identifier, validate_sql_for_define_table, validate_sql_for_query, validate_table_name,
@@ -65,8 +65,14 @@ fn bench_validate_sql_for_define_table(c: &mut Criterion) {
 
     let cases = [
         ("simple", "SELECT id, name FROM users"),
-        ("aggregation", "SELECT user_id, SUM(total) as total_spent FROM orders GROUP BY user_id"),
-        ("nested_subquery", "SELECT * FROM (SELECT * FROM (SELECT * FROM users) t1) t2"),
+        (
+            "aggregation",
+            "SELECT user_id, SUM(total) as total_spent FROM orders GROUP BY user_id",
+        ),
+        (
+            "nested_subquery",
+            "SELECT * FROM (SELECT * FROM (SELECT * FROM users) t1) t2",
+        ),
     ];
 
     for (name, sql) in cases {

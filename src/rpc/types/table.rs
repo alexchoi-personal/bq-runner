@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::session::pipeline::TableError;
+
 fn default_limit() -> usize {
     100
 }
@@ -102,12 +104,6 @@ pub struct ExecuteParams {
     pub tables: Option<Vec<String>>,
     #[serde(default)]
     pub force: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TableError {
-    pub table: String,
-    pub error: String,
 }
 
 #[derive(Debug, Serialize)]

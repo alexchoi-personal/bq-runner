@@ -21,7 +21,7 @@ pub struct PipelineResult {
     pub skipped: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TableError {
     pub table: String,
     pub error: String,
@@ -31,13 +31,6 @@ impl PipelineResult {
     pub fn all_succeeded(&self) -> bool {
         self.failed.is_empty() && self.skipped.is_empty()
     }
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ExecutionPlan {
-    pub tables: Vec<PipelineTable>,
-    pub levels: Vec<Vec<String>>,
 }
 
 pub(super) const DEFAULT_MAX_CONCURRENCY: usize = 8;
