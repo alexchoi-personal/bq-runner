@@ -407,14 +407,14 @@ async fn run_unix_server(
         Some(v) => v,
         None => {
             tracing::warn!("rate_limit_per_second is 0, defaulting to 100");
-            NonZeroU32::new(100).unwrap()
+            NonZeroU32::new(100).expect("100 is non-zero")
         }
     };
     let burst = match NonZeroU32::new(rate_limit_burst) {
         Some(v) => v,
         None => {
             tracing::warn!("rate_limit_burst is 0, defaulting to 200");
-            NonZeroU32::new(200).unwrap()
+            NonZeroU32::new(200).expect("200 is non-zero")
         }
     };
     let quota = Quota::per_second(rps).allow_burst(burst);

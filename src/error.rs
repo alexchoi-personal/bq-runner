@@ -56,6 +56,7 @@ impl Error {
             Error::Internal(msg) => Error::Internal(format!("{} {}", context, msg)),
             Error::Loader(msg) => Error::Loader(format!("{} {}", context, msg)),
             Error::BigQuery(msg) => Error::BigQuery(format!("{} {}", context, msg)),
+            Error::InvalidRequest(msg) => Error::InvalidRequest(format!("{} {}", context, msg)),
             other => other,
         }
     }
@@ -217,11 +218,14 @@ mod tests {
     }
 
     #[test]
-    fn test_with_context_passthrough_invalid_request() {
+    fn test_with_context_invalid_request() {
         let err = Error::InvalidRequest("bad".to_string());
         let contextualized = err.with_context("validate", None);
         match contextualized {
-            Error::InvalidRequest(msg) => assert_eq!(msg, "bad"),
+            Error::InvalidRequest(msg) => {
+                assert!(msg.contains("[method=validate]"));
+                assert!(msg.contains("bad"));
+            }
             _ => panic!("Expected InvalidRequest variant"),
         }
     }

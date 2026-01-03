@@ -209,8 +209,8 @@ impl BigQueryExecutor {
             if status.status.state == JobState::Done {
                 if let Some(err) = &status.status.error_result {
                     return Err(Error::Executor(format!(
-                        "Load job failed: {:?}",
-                        err.message
+                        "Load job failed: {}",
+                        err.message.as_deref().unwrap_or("Unknown error")
                     )));
                 }
 
@@ -224,10 +224,13 @@ impl BigQueryExecutor {
                 let rows = status
                     .statistics
                     .and_then(|s| s.load)
-                    .and_then(|l| l.output_rows)
-                    .unwrap_or(0) as u64;
+                    .and_then(|l| l.output_rows);
 
-                return Ok(rows);
+                if rows.is_none() {
+                    tracing::warn!(job_id = %job_id, "BigQuery job completed but statistics are missing, defaulting to 0 rows");
+                }
+
+                return Ok(rows.unwrap_or(0) as u64);
             }
 
             tokio::time::sleep(interval).await;

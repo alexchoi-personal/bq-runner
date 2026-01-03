@@ -24,7 +24,7 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
         let quoted_name = format!("`{}`", quote_identifier(&table.name));
         let drop_sql = format!("DROP TABLE IF EXISTS {}", quoted_name);
         if let Err(e) = executor.execute_statement(&drop_sql).await {
-            tracing::debug!(table = %table.name, error = %e, "Failed to drop table before recreation");
+            tracing::warn!(table = %table.name, error = %e, "Failed to drop table before recreation");
         }
 
         let query_result = executor.execute_query(sql).await.map_err(|e| {
@@ -45,6 +45,7 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
             executor.execute_statement(&create_sql).await?;
 
             if !query_result.rows.is_empty() {
+                const INSERT_BATCH_SIZE: usize = 1000;
                 let values: Vec<String> = query_result
                     .rows
                     .iter()
@@ -54,9 +55,11 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
                     })
                     .collect();
 
-                let insert_sql =
-                    format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
-                executor.execute_statement(&insert_sql).await?;
+                for chunk in values.chunks(INSERT_BATCH_SIZE) {
+                    let insert_sql =
+                        format!("INSERT INTO {} VALUES {}", quoted_name, chunk.join(", "));
+                    executor.execute_statement(&insert_sql).await?;
+                }
             }
         }
     }
@@ -83,22 +86,31 @@ async fn create_source_table_standalone(
         executor.execute_statement(&create_sql).await?;
 
         if !table.rows.is_empty() {
-            let values: Vec<String> = table
-                .rows
-                .iter()
-                .filter_map(|row| {
-                    if let Value::Array(arr) = row {
-                        let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                        Some(format!("({})", vals.join(", ")))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            const INSERT_BATCH_SIZE: usize = 1000;
+            let mut values: Vec<String> = Vec::with_capacity(table.rows.len());
+            for (idx, row) in table.rows.iter().enumerate() {
+                if let Value::Array(arr) = row {
+                    let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
+                    values.push(format!("({})", vals.join(", ")));
+                } else {
+                    return Err(Error::Executor(format!(
+                        "Invalid row format at index {} in table '{}': expected array, got {}",
+                        idx,
+                        table.name,
+                        match row {
+                            Value::Object(_) => "object",
+                            Value::String(_) => "string",
+                            Value::Number(_) => "number",
+                            Value::Bool(_) => "boolean",
+                            Value::Null => "null",
+                            _ => "unknown",
+                        }
+                    )));
+                }
+            }
 
-            if !values.is_empty() {
-                let insert_sql =
-                    format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
+            for chunk in values.chunks(INSERT_BATCH_SIZE) {
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, chunk.join(", "));
                 executor.execute_statement(&insert_sql).await?;
             }
         }
@@ -269,22 +281,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_source_table_non_array_rows_filtered() {
+    async fn test_execute_source_table_non_array_rows_returns_error() {
         let executor = create_executor();
         let table = make_source_table(
             "mixed_rows",
             vec![ColumnDef::int64("id")],
-            vec![
-                json!([1]),
-                json!({"not": "array"}),
-                json!([2]),
-                json!("string"),
-                json!([3]),
-            ],
+            vec![json!([1]), json!({"not": "array"}), json!([2])],
         );
 
         let result = execute_table(executor.as_ref(), &table).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid row format"));
+        assert!(msg.contains("index 1"));
     }
 
     #[tokio::test]

@@ -51,7 +51,13 @@ impl FileLoader {
 
         let files: Vec<PathBuf> = glob(&pattern_str)
             .map_err(|e| Error::Loader(format!("Invalid glob pattern: {}", e)))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to read path during glob traversal");
+                    None
+                }
+            })
             .collect();
 
         files
