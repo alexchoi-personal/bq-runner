@@ -1,13 +1,23 @@
+use std::time::Duration;
+
 use serde_json::Value;
+use tokio::time::timeout;
 
 use crate::error::{Error, Result};
 use crate::executor::converters::json_to_sql_value;
 use crate::executor::ExecutorBackend;
 use crate::validation::quote_identifier;
 
-use super::types::PipelineTable;
+use super::types::{PipelineTable, DEFAULT_TABLE_TIMEOUT_SECS};
 
 pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+    let timeout_duration = Duration::from_secs(DEFAULT_TABLE_TIMEOUT_SECS);
+    timeout(timeout_duration, execute_table_inner(executor, table))
+        .await
+        .map_err(|_| Error::RequestTimeout(DEFAULT_TABLE_TIMEOUT_SECS))?
+}
+
+async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
     if table.is_source {
         create_source_table_standalone(executor, table).await?;
     } else if let Some(sql) = &table.sql {

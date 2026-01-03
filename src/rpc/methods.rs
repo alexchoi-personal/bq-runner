@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use tracing::warn;
 use uuid::Uuid;
 
 use crate::config::RpcConfig;
@@ -11,6 +10,83 @@ use crate::error::{Error, Result};
 use crate::executor::converters::json_to_sql_value;
 use crate::session::SessionManager;
 use crate::validation::{quote_identifier, validate_sql_for_query, validate_table_name};
+
+struct ParsedRows {
+    column_names: Option<Vec<String>>,
+    values: Vec<String>,
+    total_rows: usize,
+}
+
+fn parse_insert_rows(rows: &[Value]) -> ParsedRows {
+    let total_rows = rows.len();
+    if rows.is_empty() {
+        return ParsedRows {
+            column_names: None,
+            values: vec![],
+            total_rows: 0,
+        };
+    }
+
+    let first_row = &rows[0];
+    let (column_names, values) = if let Value::Object(first_obj) = first_row {
+        let cols: Vec<String> = first_obj.keys().cloned().collect();
+        let vals: Vec<String> = rows
+            .iter()
+            .filter_map(|row| {
+                if let Value::Object(obj) = row {
+                    let row_vals: Vec<String> =
+                        cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
+                    Some(format!("({})", row_vals.join(", ")))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (Some(cols), vals)
+    } else {
+        let vals: Vec<String> = rows
+            .iter()
+            .filter_map(|row| {
+                if let Value::Array(arr) = row {
+                    let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
+                    Some(format!("({})", row_vals.join(", ")))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (None, vals)
+    };
+
+    ParsedRows {
+        column_names,
+        values,
+        total_rows,
+    }
+}
+
+fn build_insert_sql(
+    table_name: &str,
+    column_names: Option<&[String]>,
+    values: &[String],
+) -> String {
+    let quoted_table = format!("`{}`", quote_identifier(table_name));
+    match column_names {
+        Some(cols) => {
+            let quoted_cols: Vec<String> = cols
+                .iter()
+                .map(|c| format!("`{}`", quote_identifier(c)))
+                .collect();
+            format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                quoted_table,
+                quoted_cols.join(", "),
+                values.join(", ")
+            )
+        }
+        None => format!("INSERT INTO {} VALUES {}", quoted_table, values.join(", ")),
+    }
+}
 
 pub trait HasSessionId {
     fn session_id(&self) -> &str;
@@ -383,68 +459,21 @@ impl RpcMethods {
             )));
         }
 
-        // Determine if rows are objects or arrays based on first row
-        let first_row = &p.rows[0];
-        let total_rows = p.rows.len();
-        let (column_names, values): (Option<Vec<String>>, Vec<String>) =
-            if let Value::Object(first_obj) = first_row {
-                let cols: Vec<String> = first_obj.keys().cloned().collect();
-                let vals: Vec<String> = p
-                    .rows
-                    .iter()
-                    .filter_map(|row| {
-                        if let Value::Object(obj) = row {
-                            let row_vals: Vec<String> =
-                                cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
-                            Some(format!("({})", row_vals.join(", ")))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                (Some(cols), vals)
-            } else {
-                let vals: Vec<String> = p
-                    .rows
-                    .iter()
-                    .filter_map(|row| {
-                        if let Value::Array(arr) = row {
-                            let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                            Some(format!("({})", row_vals.join(", ")))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                (None, vals)
-            };
-
-        let filtered_count = total_rows - values.len();
+        let parsed = parse_insert_rows(&p.rows);
+        let filtered_count = parsed.total_rows - parsed.values.len();
         if filtered_count > 0 {
-            warn!(
-                table = %p.table_name,
-                filtered = filtered_count,
-                total = total_rows,
-                "Rows filtered due to inconsistent format"
-            );
+            return Err(Error::InvalidRequest(format!(
+                "Mixed row formats detected in insert: {} of {} rows have inconsistent format. All rows must be either objects or arrays.",
+                filtered_count, parsed.total_rows
+            )));
         }
 
-        let row_count = values.len() as u64;
-        let sql = match column_names {
-            Some(cols) => {
-                let quoted_cols: Vec<String> = cols
-                    .iter()
-                    .map(|c| format!("`{}`", quote_identifier(c)))
-                    .collect();
-                format!(
-                    "INSERT INTO {} ({}) VALUES {}",
-                    p.table_name,
-                    quoted_cols.join(", "),
-                    values.join(", ")
-                )
-            }
-            None => format!("INSERT INTO {} VALUES {}", p.table_name, values.join(", ")),
-        };
+        let row_count = parsed.values.len() as u64;
+        let sql = build_insert_sql(
+            &p.table_name,
+            parsed.column_names.as_deref(),
+            &parsed.values,
+        );
 
         self.session_manager
             .execute_statement(session_id, &sql)
@@ -837,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_with_mixed_rows_filters_invalid() {
+    async fn test_insert_with_mixed_rows_returns_error() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
         methods
@@ -860,9 +889,12 @@ mod tests {
                     "rows": [[1], "invalid", [2], null, [3]]
                 }),
             )
-            .await
-            .unwrap();
-        assert_eq!(result["insertedRows"], 3);
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("Mixed row formats"));
     }
 
     #[tokio::test]

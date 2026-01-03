@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
@@ -62,15 +63,12 @@ impl YachtSqlExecutor {
         path: &str,
         schema: &[ColumnDef],
     ) -> Result<u64> {
-        let file = open_file_secure(Path::new(path))
-            .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
-
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| Error::Executor(format!("Failed to read parquet: {}", e)))?;
-
-        let reader = builder
-            .build()
-            .map_err(|e| Error::Executor(format!("Failed to build parquet reader: {}", e)))?;
+        let path_buf = PathBuf::from(path);
+        let batches = tokio::task::spawn_blocking(move || -> Result<Vec<RecordBatch>> {
+            read_parquet_batches(&path_buf)
+        })
+        .await
+        .map_err(|e| Error::Executor(format!("Parquet read task failed: {}", e)))??;
 
         let quoted_table = format!("`{}`", quote_identifier(table_name));
         let columns: Vec<String> = schema
@@ -90,16 +88,14 @@ impl YachtSqlExecutor {
             .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, create_sql)))?;
 
         let mut total_rows = 0u64;
+        const INSERT_BATCH_SIZE: usize = 1000;
 
-        for batch_result in reader {
-            let batch = batch_result
-                .map_err(|e| Error::Executor(format!("Failed to read batch: {}", e)))?;
-
+        for batch in batches {
             if batch.num_rows() == 0 {
                 continue;
             }
 
-            let mut all_values: Vec<Vec<String>> = Vec::with_capacity(batch.num_rows());
+            let mut all_values: Vec<String> = Vec::with_capacity(batch.num_rows());
             for row_idx in 0..batch.num_rows() {
                 let mut row_values = Vec::with_capacity(schema.len());
                 for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
@@ -108,30 +104,44 @@ impl YachtSqlExecutor {
                     let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_type);
                     row_values.push(value);
                 }
-                all_values.push(row_values);
+                all_values.push(format!("({})", row_values.join(", ")));
             }
 
-            let values_str: Vec<String> = all_values
-                .iter()
-                .map(|row| format!("({})", row.join(", ")))
-                .collect();
+            for chunk in all_values.chunks(INSERT_BATCH_SIZE) {
+                let insert_sql =
+                    format!("INSERT INTO {} VALUES {}", quoted_table, chunk.join(", "));
 
-            let insert_sql = format!(
-                "INSERT INTO {} VALUES {}",
-                quoted_table,
-                values_str.join(", ")
-            );
-
-            self.executor
-                .execute_sql(&insert_sql)
-                .await
-                .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+                self.executor
+                    .execute_sql(&insert_sql)
+                    .await
+                    .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+            }
 
             total_rows += batch.num_rows() as u64;
         }
 
         Ok(total_rows)
     }
+}
+
+fn read_parquet_batches(path: &Path) -> Result<Vec<RecordBatch>> {
+    let file = open_file_secure(path)
+        .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
+
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| Error::Executor(format!("Failed to read parquet: {}", e)))?;
+
+    let reader = builder
+        .build()
+        .map_err(|e| Error::Executor(format!("Failed to build parquet reader: {}", e)))?;
+
+    let mut batches = Vec::new();
+    for batch_result in reader {
+        let batch =
+            batch_result.map_err(|e| Error::Executor(format!("Failed to read batch: {}", e)))?;
+        batches.push(batch);
+    }
+    Ok(batches)
 }
 
 impl Default for YachtSqlExecutor {

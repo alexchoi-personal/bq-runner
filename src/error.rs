@@ -41,7 +41,7 @@ impl Error {
             Error::Loader(_) => -32001,
             Error::BigQuery(_) => -32003,
             Error::Timeout { .. } => -32004,
-            Error::RequestTimeout(_) => -32004,
+            Error::RequestTimeout(_) => -32005,
         }
     }
 
@@ -249,6 +249,6 @@ mod tests {
     #[test]
     fn test_error_code_request_timeout() {
         let err = Error::RequestTimeout(300);
-        assert_eq!(err.code(), -32004);
+        assert_eq!(err.code(), -32005);
     }
 }

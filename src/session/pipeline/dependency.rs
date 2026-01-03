@@ -1,14 +1,74 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::LazyLock;
 
+use parking_lot::Mutex;
 use sqlparser::ast::{
     Expr, Query, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, With,
 };
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 
-pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, String>) -> Vec<String> {
+const SQL_CACHE_SIZE: usize = 256;
+
+struct ParseCache {
+    entries: HashMap<u64, Vec<Statement>>,
+    order: VecDeque<u64>,
+}
+
+impl ParseCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(SQL_CACHE_SIZE),
+            order: VecDeque::with_capacity(SQL_CACHE_SIZE),
+        }
+    }
+
+    fn get(&mut self, hash: u64) -> Option<Vec<Statement>> {
+        self.entries.get(&hash).cloned()
+    }
+
+    fn insert(&mut self, hash: u64, statements: Vec<Statement>) {
+        if self.entries.contains_key(&hash) {
+            return;
+        }
+        if self.entries.len() >= SQL_CACHE_SIZE {
+            if let Some(old_hash) = self.order.pop_front() {
+                self.entries.remove(&old_hash);
+            }
+        }
+        self.entries.insert(hash, statements);
+        self.order.push_back(hash);
+    }
+}
+
+static PARSE_CACHE: LazyLock<Mutex<ParseCache>> = LazyLock::new(|| Mutex::new(ParseCache::new()));
+
+fn hash_sql(sql: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    sql.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_sql_cached(sql: &str) -> Option<Vec<Statement>> {
+    let hash = hash_sql(sql);
+    {
+        let mut cache = PARSE_CACHE.lock();
+        if let Some(statements) = cache.get(hash) {
+            return Some(statements);
+        }
+    }
     let dialect = BigQueryDialect {};
-    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
+    let statements = Parser::parse_sql(&dialect, sql).ok()?;
+    {
+        let mut cache = PARSE_CACHE.lock();
+        cache.insert(hash, statements.clone());
+    }
+    Some(statements)
+}
+
+pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, String>) -> Vec<String> {
+    let Some(statements) = parse_sql_cached(sql) else {
         return vec![];
     };
 

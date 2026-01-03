@@ -22,7 +22,7 @@ use execution::execute_table;
 
 #[derive(Clone)]
 pub struct Pipeline {
-    tables: HashMap<String, PipelineTable>,
+    tables: HashMap<String, Arc<PipelineTable>>,
     table_status: HashMap<String, TableStatus>,
     table_name_lookup: HashMap<String, String>,
     max_concurrency: usize,
@@ -45,6 +45,7 @@ impl Pipeline {
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
         let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
 
+        let mut temp_tables: HashMap<String, PipelineTable> = HashMap::new();
         for def in defs {
             let is_source = def.sql.is_none();
             let table = PipelineTable {
@@ -57,13 +58,13 @@ impl Pipeline {
             };
             self.table_name_lookup
                 .insert(table.name.to_uppercase(), table.name.clone());
-            self.tables.insert(table.name.clone(), table);
+            temp_tables.insert(table.name.clone(), table);
             self.table_status
                 .insert(def.name.clone(), TableStatus::Pending);
         }
 
         for name in &new_names {
-            let deps = if let Some(table) = self.tables.get(name) {
+            let deps = if let Some(table) = temp_tables.get(name) {
                 table
                     .sql
                     .as_ref()
@@ -72,10 +73,14 @@ impl Pipeline {
                 None
             };
             if let Some(deps) = deps {
-                if let Some(table) = self.tables.get_mut(name) {
+                if let Some(table) = temp_tables.get_mut(name) {
                     table.dependencies = deps;
                 }
             }
+        }
+
+        for (name, table) in temp_tables {
+            self.tables.insert(name, Arc::new(table));
         }
 
         self.detect_cycles(&new_names)?;
@@ -449,24 +454,20 @@ impl Pipeline {
     }
 
     pub fn register_table(&mut self, name: &str, sql: &str) -> Result<Vec<String>> {
+        self.table_name_lookup
+            .insert(name.to_uppercase(), name.to_string());
+        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup);
         let table = PipelineTable {
             name: name.to_string(),
             sql: Some(sql.to_string()),
             schema: None,
             rows: vec![],
-            dependencies: vec![],
+            dependencies: deps.clone(),
             is_source: false,
         };
-        self.table_name_lookup
-            .insert(name.to_uppercase(), name.to_string());
-        self.tables.insert(name.to_string(), table);
+        self.tables.insert(name.to_string(), Arc::new(table));
         self.table_status
             .insert(name.to_string(), TableStatus::Pending);
-
-        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup);
-        if let Some(table) = self.tables.get_mut(name) {
-            table.dependencies = deps.clone();
-        }
 
         self.detect_cycles(&[name.to_string()])?;
 
