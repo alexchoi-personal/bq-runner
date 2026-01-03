@@ -37,6 +37,9 @@ tokio-tungstenite = "0.24"
 regex = "1"
 sqlparser = "0.52"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "bq-runner-server"
 path = "src/bin/server.rs"
