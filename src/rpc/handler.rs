@@ -13,10 +13,9 @@ use crate::metrics::{
     record_rpc_duration, record_rpc_error, record_rpc_request, record_rpc_success,
 };
 
-fn extract_session_id(params: &Option<serde_json::Value>) -> Option<String> {
+fn extract_session_id(params: &serde_json::Value) -> Option<String> {
     params
-        .as_ref()
-        .and_then(|p| p.get("sessionId"))
+        .get("sessionId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
@@ -65,10 +64,12 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
         return RpcResponse::invalid_request();
     }
 
-    let id = request.id.clone().unwrap_or(Value::Null);
-    let method_name = request.method.clone();
+    let session_id = extract_session_id(&request.params);
+    let RpcRequest {
+        id, method, params, ..
+    } = request;
+    let id = id.unwrap_or(Value::Null);
 
-    let session_id = extract_session_id(&Some(request.params.clone()));
     let start = Instant::now();
     let audit_enabled = methods.audit_enabled();
     let request_id = if audit_enabled {
@@ -77,13 +78,13 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
         None
     };
 
-    record_rpc_request(&method_name);
+    record_rpc_request(&method);
 
     if let Some(ref req_id) = request_id {
         info!(
             target: "audit",
             request_id = %req_id,
-            method = %request.method,
+            method = %method,
             session_id = ?session_id,
             "request_received"
         );
@@ -91,17 +92,13 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
 
     let timeout_secs = methods.rpc_config().request_timeout_secs;
     let timeout_duration = Duration::from_secs(timeout_secs);
-    let result = match tokio::time::timeout(
-        timeout_duration,
-        methods.dispatch(&request.method, request.params),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(Error::RequestTimeout(timeout_secs)),
-    };
+    let result =
+        match tokio::time::timeout(timeout_duration, methods.dispatch(&method, params)).await {
+            Ok(result) => result,
+            Err(_) => Err(Error::RequestTimeout(timeout_secs)),
+        };
 
-    record_rpc_duration(&method_name, start);
+    record_rpc_duration(&method, start);
 
     if let Some(ref req_id) = request_id {
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -109,7 +106,7 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
             Ok(_) => info!(
                 target: "audit",
                 request_id = %req_id,
-                method = %method_name,
+                method = %method,
                 session_id = ?session_id,
                 duration_ms = duration_ms,
                 status = "success",
@@ -118,7 +115,7 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
             Err(e) => warn!(
                 target: "audit",
                 request_id = %req_id,
-                method = %method_name,
+                method = %method,
                 session_id = ?session_id,
                 duration_ms = duration_ms,
                 status = "error",
@@ -130,17 +127,17 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
 
     match result {
         Ok(result) => {
-            record_rpc_success(&method_name);
+            record_rpc_success(&method);
             RpcResponse::success(id, result)
         }
         Err(e) => {
             if matches!(e, crate::error::Error::InvalidRequest(ref msg) if msg.starts_with("Unknown method"))
             {
-                record_rpc_error(&method_name, -32601);
-                RpcResponse::method_not_found(id, &method_name)
+                record_rpc_error(&method, -32601);
+                RpcResponse::method_not_found(id, &method)
             } else {
-                let e = e.with_context(&method_name, session_id.as_deref());
-                record_rpc_error(&method_name, e.code());
+                let e = e.with_context(&method, session_id.as_deref());
+                record_rpc_error(&method, e.code());
                 RpcResponse::error(id, e.code(), e.to_string())
             }
         }

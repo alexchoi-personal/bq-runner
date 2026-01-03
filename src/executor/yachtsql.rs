@@ -367,7 +367,7 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
         .iter()
         .map(|f| ColumnInfo {
             name: f.name.clone(),
-            data_type: datatype_to_bq_type(&f.data_type),
+            data_type: datatype_to_bq_type(&f.data_type).into_owned(),
         })
         .collect();
 

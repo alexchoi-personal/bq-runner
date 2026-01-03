@@ -596,7 +596,10 @@ impl SessionManager {
                 let executor = Arc::clone(&executor);
                 let semaphore = Arc::clone(&semaphore);
                 tokio::spawn(async move {
-                    let _permit = semaphore.acquire().await.expect("semaphore closed");
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .map_err(|_| Error::Internal("Semaphore unexpectedly closed".into()))?;
                     let row_count = executor
                         .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
                         .await?;

@@ -1,25 +1,27 @@
+use std::borrow::Cow;
+
 use serde_json::{json, Value as JsonValue};
 use yachtsql::{DataType, Value as YachtValue};
 
-pub fn datatype_to_bq_type(dt: &DataType) -> String {
+pub fn datatype_to_bq_type(dt: &DataType) -> Cow<'static, str> {
     match dt {
-        DataType::Bool => "BOOLEAN".to_string(),
-        DataType::Int64 => "INT64".to_string(),
-        DataType::Float64 => "FLOAT64".to_string(),
-        DataType::Numeric(_) | DataType::BigNumeric => "NUMERIC".to_string(),
-        DataType::String => "STRING".to_string(),
-        DataType::Bytes => "BYTES".to_string(),
-        DataType::Date => "DATE".to_string(),
-        DataType::DateTime => "DATETIME".to_string(),
-        DataType::Time => "TIME".to_string(),
-        DataType::Timestamp => "TIMESTAMP".to_string(),
-        DataType::Geography => "GEOGRAPHY".to_string(),
-        DataType::Json => "JSON".to_string(),
-        DataType::Struct(_) => "STRUCT".to_string(),
-        DataType::Array(inner) => format!("ARRAY<{}>", datatype_to_bq_type(inner)),
-        DataType::Interval => "INTERVAL".to_string(),
-        DataType::Range(_) => "STRING".to_string(),
-        DataType::Unknown => "STRING".to_string(),
+        DataType::Bool => Cow::Borrowed("BOOLEAN"),
+        DataType::Int64 => Cow::Borrowed("INT64"),
+        DataType::Float64 => Cow::Borrowed("FLOAT64"),
+        DataType::Numeric(_) | DataType::BigNumeric => Cow::Borrowed("NUMERIC"),
+        DataType::String => Cow::Borrowed("STRING"),
+        DataType::Bytes => Cow::Borrowed("BYTES"),
+        DataType::Date => Cow::Borrowed("DATE"),
+        DataType::DateTime => Cow::Borrowed("DATETIME"),
+        DataType::Time => Cow::Borrowed("TIME"),
+        DataType::Timestamp => Cow::Borrowed("TIMESTAMP"),
+        DataType::Geography => Cow::Borrowed("GEOGRAPHY"),
+        DataType::Json => Cow::Borrowed("JSON"),
+        DataType::Struct(_) => Cow::Borrowed("STRUCT"),
+        DataType::Array(inner) => Cow::Owned(format!("ARRAY<{}>", datatype_to_bq_type(inner))),
+        DataType::Interval => Cow::Borrowed("INTERVAL"),
+        DataType::Range(_) => Cow::Borrowed("STRING"),
+        DataType::Unknown => Cow::Borrowed("STRING"),
     }
 }
 

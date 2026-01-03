@@ -361,7 +361,10 @@ fn string_to_bq_type(type_str: &str) -> TableFieldType {
         "INTERVAL" => TableFieldType::Interval,
         "JSON" => TableFieldType::Json,
         "STRUCT" | "RECORD" => TableFieldType::Struct,
-        _ => TableFieldType::String,
+        other => {
+            tracing::warn!(type_str = %other, "Unknown BigQuery type, defaulting to STRING");
+            TableFieldType::String
+        }
     }
 }
 
