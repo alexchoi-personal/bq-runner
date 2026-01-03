@@ -4,15 +4,6 @@ use serde_json::Value;
 
 use crate::domain::ColumnDef;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TableStatus {
-    #[default]
-    Pending,
-    Running,
-    Succeeded,
-    Failed,
-}
-
 #[derive(Debug, Clone)]
 pub struct PipelineTable {
     pub name: String,
@@ -43,6 +34,7 @@ impl PipelineResult {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExecutionPlan {
     pub tables: Vec<PipelineTable>,
     pub levels: Vec<Vec<String>>,

@@ -13,7 +13,7 @@ pub fn json_to_sql_value(val: &Value) -> String {
         Value::Object(obj) => {
             let fields: Vec<String> = obj
                 .iter()
-                .map(|(k, v)| format!("'{}': {}", k, json_to_sql_value(v)))
+                .map(|(k, v)| format!("'{}': {}", k.replace('\'', "''"), json_to_sql_value(v)))
                 .collect();
             format!("{{{}}}", fields.join(", "))
         }

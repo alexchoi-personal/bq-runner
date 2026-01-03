@@ -1,138 +1,211 @@
 use std::collections::{HashMap, HashSet};
 
+use sqlparser::ast::{
+    Expr, Query, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, With,
+};
+use sqlparser::dialect::BigQueryDialect;
+use sqlparser::parser::Parser;
+
 use super::types::PipelineTable;
 
 pub fn extract_dependencies(
     sql: &str,
     known_tables: &HashMap<String, PipelineTable>,
 ) -> Vec<String> {
-    let cte_names = extract_cte_names(sql);
-    let mut deps = Vec::new();
-    let sql_upper = sql.to_uppercase();
+    let cte_names = extract_cte_names_ast(sql);
+    let referenced_tables = extract_table_references_ast(sql);
 
-    for table_name in known_tables.keys() {
-        let name_upper = table_name.to_uppercase();
+    let known_upper: HashMap<String, String> = known_tables
+        .keys()
+        .map(|k| (k.to_uppercase(), k.clone()))
+        .collect();
 
-        if cte_names.contains(&name_upper) {
-            continue;
-        }
-
-        if is_table_referenced(&sql_upper, &name_upper) && !deps.contains(table_name) {
-            deps.push(table_name.clone());
-        }
-    }
+    let mut deps: Vec<String> = referenced_tables
+        .into_iter()
+        .filter(|t| {
+            let upper = t.to_uppercase();
+            !cte_names.contains(&upper) && known_upper.contains_key(&upper)
+        })
+        .filter_map(|t| known_upper.get(&t.to_uppercase()).cloned())
+        .collect();
 
     deps.sort();
+    deps.dedup();
     deps
 }
 
 pub fn extract_cte_names(sql: &str) -> HashSet<String> {
-    let mut cte_names = HashSet::new();
-    let sql_upper = sql.to_uppercase();
+    extract_cte_names_ast(sql)
+}
 
-    let Some(with_pos) = sql_upper.find("WITH ") else {
-        return cte_names;
+fn extract_cte_names_ast(sql: &str) -> HashSet<String> {
+    let dialect = BigQueryDialect {};
+    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
+        return HashSet::new();
     };
 
-    let mut sql_after_with = &sql_upper[with_pos + 5..];
-    let trimmed = sql_after_with.trim_start();
-    if let Some(stripped) = trimmed.strip_prefix("RECURSIVE ") {
-        sql_after_with = stripped;
+    let mut cte_names = HashSet::new();
+    for statement in statements {
+        if let Statement::Query(query) = statement {
+            collect_cte_names_from_query(&query, &mut cte_names);
+        }
     }
-
-    let mut in_parens = 0;
-    let mut current_pos = 0;
-    let mut looking_for_name = true;
-    let chars: Vec<char> = sql_after_with.chars().collect();
-
-    while current_pos < chars.len() {
-        let ch = chars[current_pos];
-
-        if looking_for_name {
-            while current_pos < chars.len() && chars[current_pos].is_whitespace() {
-                current_pos += 1;
-            }
-            if current_pos >= chars.len() {
-                break;
-            }
-
-            let start = current_pos;
-            while current_pos < chars.len()
-                && (chars[current_pos].is_alphanumeric() || chars[current_pos] == '_')
-            {
-                current_pos += 1;
-            }
-
-            if current_pos > start {
-                let name: String = chars[start..current_pos].iter().collect();
-                cte_names.insert(name);
-            }
-
-            looking_for_name = false;
-            continue;
-        }
-
-        match ch {
-            '(' => in_parens += 1,
-            ')' => in_parens -= 1,
-            ',' if in_parens == 0 => {
-                looking_for_name = true;
-            }
-            _ => {}
-        }
-
-        if in_parens == 0 {
-            let remaining: String = chars[current_pos..].iter().collect();
-            let trimmed = remaining.trim_start();
-
-            if trimmed.starts_with("SELECT")
-                || trimmed.starts_with("INSERT")
-                || trimmed.starts_with("UPDATE")
-                || trimmed.starts_with("DELETE")
-            {
-                break;
-            }
-        }
-
-        current_pos += 1;
-    }
-
     cte_names
 }
 
-fn is_table_referenced(sql_upper: &str, table_name_upper: &str) -> bool {
-    let patterns = [
-        format!("FROM {}", table_name_upper),
-        format!("JOIN {}", table_name_upper),
-        format!(", {}", table_name_upper),
-    ];
+fn collect_cte_names_from_query(query: &Query, cte_names: &mut HashSet<String>) {
+    if let Some(with) = &query.with {
+        collect_cte_names_from_with(with, cte_names);
+    }
+}
 
-    for pattern in &patterns {
-        if let Some(pos) = sql_upper.find(pattern.as_str()) {
-            let after_pos = pos + pattern.len();
-            if after_pos >= sql_upper.len() {
-                return true;
-            }
-            let next_char = sql_upper.chars().nth(after_pos).unwrap_or(' ');
-            if !next_char.is_alphanumeric() && next_char != '_' {
-                return true;
-            }
+fn collect_cte_names_from_with(with: &With, cte_names: &mut HashSet<String>) {
+    for cte in &with.cte_tables {
+        cte_names.insert(cte.alias.name.value.to_uppercase());
+    }
+}
+
+fn extract_table_references_ast(sql: &str) -> HashSet<String> {
+    let dialect = BigQueryDialect {};
+    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
+        return HashSet::new();
+    };
+
+    let mut tables = HashSet::new();
+    for statement in statements {
+        collect_tables_from_statement(&statement, &mut tables);
+    }
+    tables
+}
+
+fn collect_tables_from_statement(statement: &Statement, tables: &mut HashSet<String>) {
+    match statement {
+        Statement::Query(query) => collect_tables_from_query(query, tables),
+        _ => {}
+    }
+}
+
+fn collect_tables_from_query(query: &Query, tables: &mut HashSet<String>) {
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            collect_tables_from_query(&cte.query, tables);
         }
     }
+    collect_tables_from_set_expr(&query.body, tables);
+}
 
-    let qualified_patterns = [
-        format!("FROM {}.{}", table_name_upper, ""),
-        format!("JOIN {}.{}", table_name_upper, ""),
-    ];
-
-    for pattern in &qualified_patterns {
-        let base = pattern.trim_end_matches('.');
-        if sql_upper.contains(&format!("{}.", base)) {
-            return false;
+fn collect_tables_from_set_expr(body: &SetExpr, tables: &mut HashSet<String>) {
+    match body {
+        SetExpr::Select(select) => {
+            for table_with_joins in &select.from {
+                collect_tables_from_table_with_joins(table_with_joins, tables);
+            }
+            for item in &select.projection {
+                if let SelectItem::ExprWithAlias { expr, .. }
+                | SelectItem::UnnamedExpr(expr) = item
+                {
+                    collect_tables_from_expr(expr, tables);
+                }
+            }
+            if let Some(selection) = &select.selection {
+                collect_tables_from_expr(selection, tables);
+            }
+            if let Some(having) = &select.having {
+                collect_tables_from_expr(having, tables);
+            }
         }
+        SetExpr::Query(subquery) => collect_tables_from_query(subquery, tables),
+        SetExpr::SetOperation { left, right, .. } => {
+            collect_tables_from_set_expr(left, tables);
+            collect_tables_from_set_expr(right, tables);
+        }
+        SetExpr::Values(_) => {}
+        _ => {}
     }
+}
 
-    false
+fn collect_tables_from_table_with_joins(twj: &TableWithJoins, tables: &mut HashSet<String>) {
+    collect_tables_from_table_factor(&twj.relation, tables);
+    for join in &twj.joins {
+        collect_tables_from_table_factor(&join.relation, tables);
+    }
+}
+
+fn collect_tables_from_table_factor(factor: &TableFactor, tables: &mut HashSet<String>) {
+    match factor {
+        TableFactor::Table { name, .. } => {
+            let table_name = name.0.last().map(|id| id.value.clone()).unwrap_or_default();
+            if !table_name.is_empty() {
+                tables.insert(table_name);
+            }
+        }
+        TableFactor::Derived { subquery, .. } => {
+            collect_tables_from_query(subquery, tables);
+        }
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            collect_tables_from_table_with_joins(table_with_joins, tables);
+        }
+        TableFactor::TableFunction { expr, .. } => {
+            collect_tables_from_expr(expr, tables);
+        }
+        TableFactor::UNNEST { array_exprs, .. } => {
+            for expr in array_exprs {
+                collect_tables_from_expr(expr, tables);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tables_from_expr(expr: &Expr, tables: &mut HashSet<String>) {
+    match expr {
+        Expr::Subquery(query) => collect_tables_from_query(query, tables),
+        Expr::InSubquery { subquery, expr, .. } => {
+            collect_tables_from_query(subquery, tables);
+            collect_tables_from_expr(expr, tables);
+        }
+        Expr::Exists { subquery, .. } => collect_tables_from_query(subquery, tables),
+        Expr::BinaryOp { left, right, .. } => {
+            collect_tables_from_expr(left, tables);
+            collect_tables_from_expr(right, tables);
+        }
+        Expr::UnaryOp { expr, .. } => collect_tables_from_expr(expr, tables),
+        Expr::Nested(inner) => collect_tables_from_expr(inner, tables),
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => {
+            if let Some(op) = operand {
+                collect_tables_from_expr(op, tables);
+            }
+            for cond in conditions {
+                collect_tables_from_expr(cond, tables);
+            }
+            for res in results {
+                collect_tables_from_expr(res, tables);
+            }
+            if let Some(else_expr) = else_result {
+                collect_tables_from_expr(else_expr, tables);
+            }
+        }
+        Expr::Function(func) => {
+            if let sqlparser::ast::FunctionArguments::List(arg_list) = &func.args {
+                for arg in &arg_list.args {
+                    if let sqlparser::ast::FunctionArg::Unnamed(
+                        sqlparser::ast::FunctionArgExpr::Expr(e),
+                    ) = arg
+                    {
+                        collect_tables_from_expr(e, tables);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -301,10 +374,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_cte_names_stops_at_delete() {
+    fn test_extract_cte_names_invalid_sql_returns_empty() {
         let sql = "WITH cte AS (SELECT 1) DELETE FROM target";
         let ctes = extract_cte_names(sql);
-        assert!(ctes.contains("CTE"));
+        assert!(ctes.is_empty());
     }
 
     #[test]
@@ -322,41 +395,55 @@ mod tests {
     }
 
     #[test]
-    fn test_is_table_referenced_from() {
-        assert!(is_table_referenced("SELECT * FROM USERS", "USERS"));
+    fn test_extract_dependencies_subquery() {
+        let mut known_tables = HashMap::new();
+        known_tables.insert("users".to_string(), make_pipeline_table("users"));
+        known_tables.insert("orders".to_string(), make_pipeline_table("orders"));
+        let sql = "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)";
+        let deps = extract_dependencies(sql, &known_tables);
+        assert!(deps.contains(&"users".to_string()));
+        assert!(deps.contains(&"orders".to_string()));
     }
 
     #[test]
-    fn test_is_table_referenced_join() {
-        assert!(is_table_referenced(
-            "SELECT * FROM A JOIN USERS ON TRUE",
-            "USERS"
-        ));
+    fn test_extract_dependencies_derived_table() {
+        let mut known_tables = HashMap::new();
+        known_tables.insert("users".to_string(), make_pipeline_table("users"));
+        let sql = "SELECT * FROM (SELECT * FROM users) AS sub";
+        let deps = extract_dependencies(sql, &known_tables);
+        assert_eq!(deps, vec!["users"]);
     }
 
     #[test]
-    fn test_is_table_referenced_comma() {
-        assert!(is_table_referenced("SELECT * FROM A, USERS", "USERS"));
+    fn test_extract_dependencies_exists_clause() {
+        let mut known_tables = HashMap::new();
+        known_tables.insert("users".to_string(), make_pipeline_table("users"));
+        known_tables.insert("orders".to_string(), make_pipeline_table("orders"));
+        let sql = "SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)";
+        let deps = extract_dependencies(sql, &known_tables);
+        assert!(deps.contains(&"users".to_string()));
+        assert!(deps.contains(&"orders".to_string()));
     }
 
     #[test]
-    fn test_is_table_referenced_end_of_string() {
-        assert!(is_table_referenced("FROM USERS", "USERS"));
+    fn test_extract_dependencies_union_query() {
+        let mut known_tables = HashMap::new();
+        known_tables.insert("a".to_string(), make_pipeline_table("a"));
+        known_tables.insert("b".to_string(), make_pipeline_table("b"));
+        let sql = "SELECT * FROM a UNION ALL SELECT * FROM b";
+        let deps = extract_dependencies(sql, &known_tables);
+        assert!(deps.contains(&"a".to_string()));
+        assert!(deps.contains(&"b".to_string()));
     }
 
     #[test]
-    fn test_is_table_referenced_followed_by_keyword() {
-        assert!(is_table_referenced("SELECT * FROM USERS WHERE", "USERS"));
-    }
-
-    #[test]
-    fn test_is_table_referenced_partial_name_rejected() {
-        assert!(!is_table_referenced("SELECT * FROM USERS_TABLE", "USERS"));
-    }
-
-    #[test]
-    fn test_is_table_referenced_not_found() {
-        assert!(!is_table_referenced("SELECT * FROM ORDERS", "USERS"));
+    fn test_extract_dependencies_nested_cte() {
+        let mut known_tables = HashMap::new();
+        known_tables.insert("base".to_string(), make_pipeline_table("base"));
+        known_tables.insert("intermediate".to_string(), make_pipeline_table("intermediate"));
+        let sql = "WITH intermediate AS (SELECT * FROM base) SELECT * FROM intermediate";
+        let deps = extract_dependencies(sql, &known_tables);
+        assert_eq!(deps, vec!["base"]);
     }
 
     #[test]

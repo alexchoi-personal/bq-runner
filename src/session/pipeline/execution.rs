@@ -3,6 +3,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::executor::ExecutorBackend;
 use crate::utils::json_to_sql_value;
+use crate::validation::quote_identifier;
 
 use super::types::PipelineTable;
 
@@ -10,7 +11,8 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
     if table.is_source {
         create_source_table_standalone(executor, table).await?;
     } else if let Some(sql) = &table.sql {
-        let drop_sql = format!("DROP TABLE IF EXISTS {}", table.name);
+        let quoted_name = format!("`{}`", quote_identifier(&table.name));
+        let drop_sql = format!("DROP TABLE IF EXISTS {}", quoted_name);
         let _ = executor.execute_statement(&drop_sql).await;
 
         let query_result = executor.execute_query(sql).await.map_err(|e| {
@@ -24,10 +26,10 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
             let column_types: Vec<String> = query_result
                 .columns
                 .iter()
-                .map(|col| format!("{} {}", col.name, col.data_type))
+                .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.data_type))
                 .collect();
 
-            let create_sql = format!("CREATE TABLE {} ({})", table.name, column_types.join(", "));
+            let create_sql = format!("CREATE TABLE {} ({})", quoted_name, column_types.join(", "));
             executor.execute_statement(&create_sql).await?;
 
             if !query_result.rows.is_empty() {
@@ -40,7 +42,7 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
                     })
                     .collect();
 
-                let insert_sql = format!("INSERT INTO {} VALUES {}", table.name, values.join(", "));
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
                 executor.execute_statement(&insert_sql).await?;
             }
         }
@@ -54,14 +56,15 @@ async fn create_source_table_standalone(
     table: &PipelineTable,
 ) -> Result<()> {
     if let Some(schema) = &table.schema {
+        let quoted_name = format!("`{}`", quote_identifier(&table.name));
         let columns: Vec<String> = schema
             .iter()
-            .map(|col| format!("{} {}", col.name, col.column_type))
+            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
             .collect();
 
         let create_sql = format!(
             "CREATE TABLE IF NOT EXISTS {} ({})",
-            table.name,
+            quoted_name,
             columns.join(", ")
         );
         executor.execute_statement(&create_sql).await?;
@@ -81,7 +84,8 @@ async fn create_source_table_standalone(
                 .collect();
 
             if !values.is_empty() {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", table.name, values.join(", "));
+                let insert_sql =
+                    format!("INSERT INTO {} VALUES {}", quoted_name, values.join(", "));
                 executor.execute_statement(&insert_sql).await?;
             }
         }

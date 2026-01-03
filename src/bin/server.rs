@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{State, WebSocketUpgrade},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -13,8 +15,12 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal;
+use tokio::sync::watch;
 use tracing::{error, info, Level};
 use tracing_subscriber::EnvFilter;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use tower::ServiceBuilder;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
 use bq_runner::executor::ExecutorMode;
 use bq_runner::rpc::{handle_websocket, process_message, RpcMethods};
@@ -104,6 +110,7 @@ struct Args {
 #[derive(Clone)]
 struct AppState {
     methods: Arc<RpcMethods>,
+    metrics_handle: PrometheusHandle,
 }
 
 #[tokio::main]
@@ -118,23 +125,61 @@ async fn main() -> anyhow::Result<()> {
 
     let executor_mode: ExecutorMode = args.backend.into();
     let session_manager = Arc::new(
-        SessionManager::with_mode_and_security(executor_mode, config.security.clone())
+        SessionManager::with_full_config(
+            executor_mode,
+            config.security.clone(),
+            config.session.clone(),
+        )
     );
-    let methods = Arc::new(RpcMethods::new(session_manager));
+    let methods = Arc::new(RpcMethods::with_config(
+        Arc::clone(&session_manager),
+        config.logging.audit_enabled,
+        config.rpc.clone(),
+    ));
 
-    match args.transport {
+    // Create shutdown channel for cleanup task
+    let (cleanup_shutdown_tx, mut cleanup_shutdown_rx) = watch::channel(false);
+
+    // Start session cleanup background task with cancellation support
+    let cleanup_interval = Duration::from_secs(config.session.cleanup_interval_secs);
+    let cleanup_manager = Arc::clone(&session_manager);
+    let cleanup_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(cleanup_interval);
+        loop {
+            tokio::select! {
+                _ = cleanup_shutdown_rx.changed() => {
+                    info!("Cleanup task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    cleanup_manager.cleanup_expired_sessions();
+                }
+            }
+        }
+    });
+
+    let result = match args.transport {
         Transport::Stdio => run_stdio_server(methods).await,
         Transport::WebSocket { port } => {
             log_backend(executor_mode);
             log_security_config(&config);
-            run_http_server(port, methods).await
+            let metrics_handle = PrometheusBuilder::new()
+                .install_recorder()
+                .expect("Failed to install Prometheus recorder");
+            run_http_server(port, methods, metrics_handle, &config).await
         }
         Transport::Unix { path } => {
             log_backend(executor_mode);
             log_security_config(&config);
-            run_unix_server(&path, methods).await
+            run_unix_server(&path, methods, &config).await
         }
-    }
+    };
+
+    // Signal cleanup task to stop and wait for it to finish
+    let _ = cleanup_shutdown_tx.send(true);
+    let _ = cleanup_handle.await;
+
+    result
 }
 
 fn init_tracing(config: &Config) {
@@ -166,7 +211,7 @@ fn log_backend(mode: ExecutorMode) {
 
 fn log_security_config(config: &Config) {
     if config.security.allowed_paths.is_empty() {
-        info!("Security: No allowed_paths configured - path validation disabled");
+        info!("Security: No allowed_paths configured - all file loading blocked");
     } else {
         info!(
             "Security: Path validation enabled for {} directories",
@@ -183,91 +228,240 @@ async fn run_stdio_server(methods: Arc<RpcMethods>) -> anyhow::Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
 
-    while let Ok(Some(line)) = reader.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-        let response = process_message(&line, &methods).await;
+    // Spawn shutdown signal handler
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
 
-        match serde_json::to_string(&response) {
-            Ok(response_text) => {
-                if let Err(e) = stdout.write_all(response_text.as_bytes()).await {
-                    error!("Failed to write response: {}", e);
-                    break;
-                }
-                if let Err(e) = stdout.write_all(b"\n").await {
-                    error!("Failed to write newline: {}", e);
-                    break;
-                }
-                if let Err(e) = stdout.flush().await {
-                    error!("Failed to flush stdout: {}", e);
-                    break;
-                }
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Stdio server shutting down");
+                break;
             }
-            Err(e) => {
-                error!("Failed to serialize response: {}", e);
+            result = reader.next_line() => {
+                match result {
+                    Ok(Some(line)) => {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        let response = process_message(&line, &methods).await;
+
+                        match serde_json::to_string(&response) {
+                            Ok(response_text) => {
+                                if let Err(e) = stdout.write_all(response_text.as_bytes()).await {
+                                    error!("Failed to write response: {}", e);
+                                    break;
+                                }
+                                if let Err(e) = stdout.write_all(b"\n").await {
+                                    error!("Failed to write newline: {}", e);
+                                    break;
+                                }
+                                if let Err(e) = stdout.flush().await {
+                                    error!("Failed to flush stdout: {}", e);
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to serialize response: {}", e);
+                            }
+                        }
+                    }
+                    Ok(None) => break, // EOF
+                    Err(e) => {
+                        error!("Failed to read line: {}", e);
+                        break;
+                    }
+                }
             }
         }
     }
 
+    info!("Stdio server shutdown complete");
     Ok(())
 }
 
-async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>) -> anyhow::Result<()> {
+async fn run_unix_server(path: &PathBuf, methods: Arc<RpcMethods>, config: &Config) -> anyhow::Result<()> {
+    use governor::{Quota, RateLimiter};
+    use std::num::NonZeroU32;
+
     if path.exists() {
         std::fs::remove_file(path)?;
     }
 
     let listener = UnixListener::bind(path)?;
-    info!("Listening on unix://{}", path.display());
+    let rate_limit_per_second = config.rpc.rate_limit_per_second;
+    let rate_limit_burst = config.rpc.rate_limit_burst;
+    info!(
+        "Listening on unix://{} (rate limit: {} req/s, burst: {})",
+        path.display(),
+        rate_limit_per_second,
+        rate_limit_burst
+    );
+
+    // Create a shared rate limiter for all connections
+    let quota = Quota::per_second(NonZeroU32::new(rate_limit_per_second as u32).unwrap_or(NonZeroU32::new(100).unwrap()))
+        .allow_burst(NonZeroU32::new(rate_limit_burst).unwrap_or(NonZeroU32::new(200).unwrap()));
+    let rate_limiter = Arc::new(RateLimiter::direct(quota));
+
+    let (shutdown_tx, _) = watch::channel(false);
+    let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Clone for the shutdown handler
+    let shutdown_tx_clone = shutdown_tx.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx_clone.send(true);
+    });
+
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let methods = Arc::clone(&methods);
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Unix server received shutdown signal");
+                break;
+            }
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _)) => {
+                        let methods = Arc::clone(&methods);
+                        let mut conn_shutdown_rx = shutdown_tx.subscribe();
+                        let conn_counter = Arc::clone(&active_connections);
+                        conn_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        tokio::spawn(async move {
-            let (reader, mut writer) = stream.into_split();
-            let mut lines = BufReader::new(reader).lines();
+                        let rate_limiter = Arc::clone(&rate_limiter);
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
+                        tokio::spawn(async move {
+                            let (reader, mut writer) = stream.into_split();
+                            let mut lines = BufReader::new(reader).lines();
 
-                let response = process_message(&line, &methods).await;
+                            loop {
+                                tokio::select! {
+                                    _ = conn_shutdown_rx.changed() => {
+                                        break;
+                                    }
+                                    result = lines.next_line() => {
+                                        match result {
+                                            Ok(Some(line)) => {
+                                                if line.trim().is_empty() {
+                                                    continue;
+                                                }
 
-                match serde_json::to_string(&response) {
-                    Ok(response_text) => {
-                        if writer.write_all(response_text.as_bytes()).await.is_err() {
-                            break;
-                        }
-                        if writer.write_all(b"\n").await.is_err() {
-                            break;
-                        }
-                        if writer.flush().await.is_err() {
-                            break;
-                        }
+                                                if rate_limiter.check().is_err() {
+                                                    let error_response = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "error": {
+                                                            "code": -32000,
+                                                            "message": "Rate limit exceeded"
+                                                        },
+                                                        "id": null
+                                                    });
+                                                    if let Ok(text) = serde_json::to_string(&error_response) {
+                                                        let _ = writer.write_all(text.as_bytes()).await;
+                                                        let _ = writer.write_all(b"\n").await;
+                                                        let _ = writer.flush().await;
+                                                    }
+                                                    continue;
+                                                }
+
+                                                let response = process_message(&line, &methods).await;
+
+                                                match serde_json::to_string(&response) {
+                                                    Ok(response_text) => {
+                                                        if writer.write_all(response_text.as_bytes()).await.is_err() {
+                                                            break;
+                                                        }
+                                                        if writer.write_all(b"\n").await.is_err() {
+                                                            break;
+                                                        }
+                                                        if writer.flush().await.is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Failed to serialize response: {}", e);
+                                                    }
+                                                }
+                                            }
+                                            Ok(None) => break, // EOF
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                            }
+
+                            conn_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        });
                     }
                     Err(e) => {
-                        error!("Failed to serialize response: {}", e);
+                        error!("Failed to accept connection: {}", e);
                     }
                 }
             }
-        });
+        }
     }
+
+    // Wait for active connections to finish (with timeout)
+    let wait_start = std::time::Instant::now();
+    let max_wait = Duration::from_secs(30);
+    while active_connections.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        if wait_start.elapsed() > max_wait {
+            info!("Timeout waiting for connections, forcing shutdown");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Clean up socket file
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+
+    info!("Unix server shutdown complete");
+    Ok(())
 }
 
-async fn run_http_server(port: u16, methods: Arc<RpcMethods>) -> anyhow::Result<()> {
-    let state = AppState { methods };
+async fn run_http_server(port: u16, methods: Arc<RpcMethods>, metrics_handle: PrometheusHandle, config: &Config) -> anyhow::Result<()> {
+    let state = AppState { methods, metrics_handle };
+
+    let rate_limit_per_second = config.rpc.rate_limit_per_second;
+    let rate_limit_burst = config.rpc.rate_limit_burst;
+
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(rate_limit_per_second)
+            .burst_size(rate_limit_burst)
+            .finish()
+            .expect("Failed to build governor config")
+    );
+    let governor_limiter = governor_conf.limiter().clone();
 
     let app = Router::new()
         .route("/", get(ws_handler))
         .route("/health", get(health_handler))
+        .route("/ready", get(readiness_handler))
+        .route("/live", get(liveness_handler))
+        .route("/metrics", get(metrics_handler))
+        .layer(
+            ServiceBuilder::new()
+                .layer(GovernorLayer { config: Arc::clone(&governor_conf) })
+        )
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Listening on ws://{}", addr);
+    info!("Listening on ws://{} (rate limit: {} req/s, burst: {})", addr, rate_limit_per_second, rate_limit_burst);
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            governor_limiter.retain_recent();
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
@@ -316,6 +510,51 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
         .on_upgrade(move |socket| handle_websocket(socket, state.methods))
 }
 
-async fn health_handler() -> impl IntoResponse {
-    Json(json!({"status": "ok", "message": "pong"}))
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let session_count = state.methods.session_manager().session_count();
+    let uptime = state.methods.session_manager().uptime_seconds();
+    Json(json!({
+        "status": "ok",
+        "session_count": session_count,
+        "uptime_seconds": uptime
+    }))
+}
+
+async fn readiness_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match state.methods.session_manager().check_executor_health().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({
+                "ready": true,
+                "status": "ready",
+                "checks": [{
+                    "name": "executor",
+                    "status": "pass"
+                }]
+            })),
+        ),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "ready": false,
+                "status": "not_ready",
+                "checks": [{
+                    "name": "executor",
+                    "status": "fail",
+                    "message": e.to_string()
+                }]
+            })),
+        ),
+    }
+}
+
+async fn liveness_handler(State(state): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "alive": true,
+        "uptime_seconds": state.methods.session_manager().uptime_seconds()
+    }))
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    state.metrics_handle.render()
 }

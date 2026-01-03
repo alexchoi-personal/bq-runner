@@ -25,6 +25,9 @@ pub enum Error {
 
     #[error("BigQuery job {job_id} timed out after {elapsed_secs} seconds")]
     Timeout { job_id: String, elapsed_secs: u64 },
+
+    #[error("Request timed out after {0} seconds")]
+    RequestTimeout(u64),
 }
 
 impl Error {
@@ -38,6 +41,7 @@ impl Error {
             Error::Loader(_) => -32001,
             Error::BigQuery(_) => -32003,
             Error::Timeout { .. } => -32004,
+            Error::RequestTimeout(_) => -32004,
         }
     }
 
@@ -234,5 +238,17 @@ mod tests {
         let err = Error::Executor("test".to_string());
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("Executor"));
+    }
+
+    #[test]
+    fn test_error_display_request_timeout() {
+        let err = Error::RequestTimeout(300);
+        assert_eq!(format!("{}", err), "Request timed out after 300 seconds");
+    }
+
+    #[test]
+    fn test_error_code_request_timeout() {
+        let err = Error::RequestTimeout(300);
+        assert_eq!(err.code(), -32004);
     }
 }

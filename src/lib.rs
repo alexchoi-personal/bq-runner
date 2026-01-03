@@ -3,13 +3,14 @@ pub mod domain;
 pub mod error;
 pub mod executor;
 pub mod loader;
+pub mod metrics;
 pub mod rpc;
 pub mod session;
 pub mod utils;
 pub mod validation;
 
-pub use config::{Config, LogFormat, LoggingConfig, SecurityConfig};
-pub use domain::{ColumnDef, TableDef, TableInfo};
+pub use config::{Config, LogFormat, LoggingConfig, RpcConfig, SecurityConfig, SessionConfig};
+pub use domain::{ColumnDef, DagTableDef, TableDef, TableInfo};
 pub use error::{Error, Result};
 pub use executor::converters::json_to_sql_value;
 pub use executor::{
@@ -19,4 +20,7 @@ pub use loader::{
     discover_files, discover_parquet_files, discover_sql_files, DiscoveredFiles, FileLoader,
     LoadedFile, ParquetFile, SqlFile, SqlLoader,
 };
-pub use session::SessionManager;
+pub use session::{Pipeline, SessionManager};
+pub use validation::{
+    quote_identifier, validate_sql_for_define_table, validate_sql_for_query, validate_table_name,
+};

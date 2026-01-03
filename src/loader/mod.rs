@@ -1,12 +1,15 @@
-use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use glob::glob;
 
 use crate::config::SecurityConfig;
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
-use crate::validation::validate_path;
+use crate::validation::{open_file_secure, validate_path};
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -66,7 +69,10 @@ impl FileLoader {
             .ok_or_else(|| Error::Loader(format!("Invalid filename: {}", path.display())))?
             .to_string();
 
-        let content = fs::read_to_string(path)
+        let mut file = open_file_secure(path)
+            .map_err(|e| Error::Loader(format!("Failed to open {}: {}", path.display(), e)))?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)
             .map_err(|e| Error::Loader(format!("Failed to read {}: {}", path.display(), e)))?;
 
         Ok(LoadedFile {
@@ -194,8 +200,12 @@ fn read_dir(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
 }
 
 fn read_file(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|e| Error::Executor(format!("Failed to read file {}: {}", path.display(), e)))
+    let mut file = open_file_secure(path)
+        .map_err(|e| Error::Executor(format!("Failed to open file {}: {}", path.display(), e)))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| Error::Executor(format!("Failed to read file {}: {}", path.display(), e)))?;
+    Ok(content)
 }
 
 fn load_schema(dataset_path: &Path, table_name: &str) -> Result<Vec<ColumnDef>> {
@@ -247,7 +257,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::Loader(msg) => assert!(msg.contains("Failed to read")),
+            Error::Loader(msg) => assert!(msg.contains("Failed to open")),
             _ => panic!("Expected Loader error"),
         }
     }

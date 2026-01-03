@@ -19,6 +19,26 @@ pub struct HealthResult {
     pub uptime_seconds: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ReadinessResult {
+    pub ready: bool,
+    pub status: String,
+    pub checks: Vec<HealthCheck>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LivenessResult {
+    pub alive: bool,
+    pub uptime_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthCheck {
+    pub name: String,
+    pub status: String,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListTablesParams {
     #[serde(rename = "sessionId")]
@@ -323,5 +343,72 @@ mod tests {
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["success"], true);
         assert_eq!(json["tables"][0]["name"], "t1");
+    }
+
+    #[test]
+    fn test_readiness_result_serialize() {
+        let result = ReadinessResult {
+            ready: true,
+            status: "ready".to_string(),
+            checks: vec![
+                HealthCheck {
+                    name: "executor".to_string(),
+                    status: "pass".to_string(),
+                    message: None,
+                },
+                HealthCheck {
+                    name: "sessions".to_string(),
+                    status: "pass".to_string(),
+                    message: Some("5 active".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["ready"], true);
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["checks"][0]["name"], "executor");
+        assert_eq!(json["checks"][0]["status"], "pass");
+        assert_eq!(json["checks"][1]["message"], "5 active");
+    }
+
+    #[test]
+    fn test_readiness_result_not_ready() {
+        let result = ReadinessResult {
+            ready: false,
+            status: "not_ready".to_string(),
+            checks: vec![HealthCheck {
+                name: "executor".to_string(),
+                status: "fail".to_string(),
+                message: Some("Connection failed".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["ready"], false);
+        assert_eq!(json["status"], "not_ready");
+        assert_eq!(json["checks"][0]["status"], "fail");
+    }
+
+    #[test]
+    fn test_liveness_result_serialize() {
+        let result = LivenessResult {
+            alive: true,
+            uptime_seconds: 3600,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["alive"], true);
+        assert_eq!(json["uptime_seconds"], 3600);
+    }
+
+    #[test]
+    fn test_health_check_clone() {
+        let check = HealthCheck {
+            name: "test".to_string(),
+            status: "pass".to_string(),
+            message: Some("ok".to_string()),
+        };
+        let cloned = check.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.status, "pass");
+        assert_eq!(cloned.message, Some("ok".to_string()));
     }
 }

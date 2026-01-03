@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
@@ -8,6 +8,8 @@ use tracing::{error, info, warn};
 
 use super::methods::RpcMethods;
 use super::types::{RpcRequest, RpcResponse};
+use crate::error::Error;
+use crate::metrics::{record_rpc_duration, record_rpc_error, record_rpc_request, record_rpc_success};
 
 fn extract_session_id(params: &Option<serde_json::Value>) -> Option<String> {
     params.as_ref()
@@ -66,49 +68,70 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
     let request_id = uuid::Uuid::new_v4().to_string();
     let session_id = extract_session_id(&Some(request.params.clone()));
     let start = Instant::now();
+    let audit_enabled = methods.audit_enabled();
 
-    info!(
-        target: "audit",
-        request_id = %request_id,
-        method = %request.method,
-        session_id = ?session_id,
-        "request_received"
-    );
+    record_rpc_request(&method_name);
 
-    let result = methods.dispatch(&request.method, request.params).await;
+    if audit_enabled {
+        info!(
+            target: "audit",
+            request_id = %request_id,
+            method = %request.method,
+            session_id = ?session_id,
+            "request_received"
+        );
+    }
 
+    let timeout_secs = methods.rpc_config().request_timeout_secs;
+    let timeout_duration = Duration::from_secs(timeout_secs);
+    let result = match tokio::time::timeout(
+        timeout_duration,
+        methods.dispatch(&request.method, request.params),
+    ).await {
+        Ok(result) => result,
+        Err(_) => Err(Error::RequestTimeout(timeout_secs)),
+    };
+
+    record_rpc_duration(&method_name, start);
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    match &result {
-        Ok(_) => info!(
-            target: "audit",
-            request_id = %request_id,
-            method = %method_name,
-            session_id = ?session_id,
-            duration_ms = duration_ms,
-            status = "success",
-            "request_completed"
-        ),
-        Err(e) => warn!(
-            target: "audit",
-            request_id = %request_id,
-            method = %method_name,
-            session_id = ?session_id,
-            duration_ms = duration_ms,
-            status = "error",
-            error = %e,
-            "request_completed"
-        ),
+    if audit_enabled {
+        match &result {
+            Ok(_) => info!(
+                target: "audit",
+                request_id = %request_id,
+                method = %method_name,
+                session_id = ?session_id,
+                duration_ms = duration_ms,
+                status = "success",
+                "request_completed"
+            ),
+            Err(e) => warn!(
+                target: "audit",
+                request_id = %request_id,
+                method = %method_name,
+                session_id = ?session_id,
+                duration_ms = duration_ms,
+                status = "error",
+                error = %e,
+                "request_completed"
+            ),
+        }
     }
 
     match result {
-        Ok(result) => RpcResponse::success(id, result),
+        Ok(result) => {
+            record_rpc_success(&method_name);
+            RpcResponse::success(id, result)
+        }
         Err(e) => {
             if matches!(e, crate::error::Error::InvalidRequest(ref msg) if msg.starts_with("Unknown method"))
             {
+                record_rpc_error(&method_name, -32601);
                 RpcResponse::method_not_found(id, &method_name)
             } else {
                 let e = e.with_context(&method_name, session_id.as_deref());
+                record_rpc_error(&method_name, e.code());
                 RpcResponse::error(id, e.code(), e.to_string())
             }
         }

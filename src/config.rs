@@ -3,17 +3,12 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
     Json,
+    #[default]
     Text,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,20 +50,79 @@ impl Default for LoggingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+    #[serde(default = "default_session_timeout_secs")]
+    pub session_timeout_secs: u64,
+    #[serde(default = "default_cleanup_interval_secs")]
+    pub cleanup_interval_secs: u64,
+}
+
+fn default_max_sessions() -> usize {
+    1000
+}
+
+fn default_session_timeout_secs() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_cleanup_interval_secs() -> u64 {
+    60 // 1 minute
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            max_sessions: default_max_sessions(),
+            session_timeout_secs: default_session_timeout_secs(),
+            cleanup_interval_secs: default_cleanup_interval_secs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpcConfig {
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_rate_limit_per_second")]
+    pub rate_limit_per_second: u64,
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
+}
+
+fn default_request_timeout_secs() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_rate_limit_per_second() -> u64 {
+    100
+}
+
+fn default_rate_limit_burst() -> u32 {
+    200
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_secs: default_request_timeout_secs(),
+            rate_limit_per_second: default_rate_limit_per_second(),
+            rate_limit_burst: default_rate_limit_burst(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub security: SecurityConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            security: SecurityConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub rpc: RpcConfig,
 }
 
 impl Config {
@@ -98,6 +152,36 @@ impl Config {
                 _ => LogFormat::Text,
             };
         }
+        if let Ok(val) = std::env::var("BQ_RUNNER_MAX_SESSIONS") {
+            match val.parse() {
+                Ok(n) => config.session.max_sessions = n,
+                Err(_) => warn!("Invalid BQ_RUNNER_MAX_SESSIONS value '{}', using default", val),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_RUNNER_SESSION_TIMEOUT_SECS") {
+            match val.parse() {
+                Ok(n) => config.session.session_timeout_secs = n,
+                Err(_) => warn!("Invalid BQ_RUNNER_SESSION_TIMEOUT_SECS value '{}', using default", val),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_RUNNER_REQUEST_TIMEOUT_SECS") {
+            match val.parse() {
+                Ok(n) => config.rpc.request_timeout_secs = n,
+                Err(_) => warn!("Invalid BQ_RUNNER_REQUEST_TIMEOUT_SECS value '{}', using default", val),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_PER_SECOND") {
+            match val.parse() {
+                Ok(n) => config.rpc.rate_limit_per_second = n,
+                Err(_) => warn!("Invalid BQ_RUNNER_RATE_LIMIT_PER_SECOND value '{}', using default", val),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_BURST") {
+            match val.parse() {
+                Ok(n) => config.rpc.rate_limit_burst = n,
+                Err(_) => warn!("Invalid BQ_RUNNER_RATE_LIMIT_BURST value '{}', using default", val),
+            }
+        }
 
         config.validate()?;
         Ok(config)
@@ -112,6 +196,23 @@ impl Config {
         if self.security.allowed_paths.is_empty() {
             warn!("No allowed_paths configured - path validation will block all file loading");
         }
+
+        if self.rpc.request_timeout_secs == 0 {
+            return Err(Error::InvalidRequest(
+                "request_timeout_secs must be greater than 0".into(),
+            ));
+        }
+        if self.rpc.rate_limit_per_second == 0 {
+            return Err(Error::InvalidRequest(
+                "rate_limit_per_second must be greater than 0".into(),
+            ));
+        }
+        if self.rpc.rate_limit_burst == 0 {
+            return Err(Error::InvalidRequest(
+                "rate_limit_burst must be greater than 0".into(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -235,5 +336,92 @@ audit_enabled = true
     fn test_config_validate_empty_paths_warns() {
         let config = Config::default();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_rpc_config_default() {
+        let rc = RpcConfig::default();
+        assert_eq!(rc.request_timeout_secs, 300);
+        assert_eq!(rc.rate_limit_per_second, 100);
+        assert_eq!(rc.rate_limit_burst, 200);
+    }
+
+    #[test]
+    fn test_env_var_override_request_timeout() {
+        env::set_var("BQ_RUNNER_REQUEST_TIMEOUT_SECS", "600");
+        let config = Config::load(None).unwrap();
+        env::remove_var("BQ_RUNNER_REQUEST_TIMEOUT_SECS");
+
+        assert_eq!(config.rpc.request_timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_env_var_override_rate_limit() {
+        env::set_var("BQ_RUNNER_RATE_LIMIT_PER_SECOND", "50");
+        env::set_var("BQ_RUNNER_RATE_LIMIT_BURST", "100");
+        let config = Config::load(None).unwrap();
+        env::remove_var("BQ_RUNNER_RATE_LIMIT_PER_SECOND");
+        env::remove_var("BQ_RUNNER_RATE_LIMIT_BURST");
+
+        assert_eq!(config.rpc.rate_limit_per_second, 50);
+        assert_eq!(config.rpc.rate_limit_burst, 100);
+    }
+
+    #[test]
+    fn test_config_load_with_rpc_section() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"
+[rpc]
+request_timeout_secs = 120
+rate_limit_per_second = 50
+rate_limit_burst = 100
+"#).unwrap();
+
+        let config = Config::load(Some(file.path())).unwrap();
+        assert_eq!(config.rpc.request_timeout_secs, 120);
+        assert_eq!(config.rpc.rate_limit_per_second, 50);
+        assert_eq!(config.rpc.rate_limit_burst, 100);
+    }
+
+    #[test]
+    fn test_config_validate_zero_timeout_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"
+[rpc]
+request_timeout_secs = 0
+"#).unwrap();
+
+        let result = Config::load(Some(file.path()));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("request_timeout_secs must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_validate_zero_rate_limit_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"
+[rpc]
+rate_limit_per_second = 0
+"#).unwrap();
+
+        let result = Config::load(Some(file.path()));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("rate_limit_per_second must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_validate_zero_burst_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"
+[rpc]
+rate_limit_burst = 0
+"#).unwrap();
+
+        let result = Config::load(Some(file.path()));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("rate_limit_burst must be greater than 0"));
     }
 }

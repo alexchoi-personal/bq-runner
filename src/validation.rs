@@ -28,6 +28,71 @@ pub fn quote_identifier(name: &str) -> String {
 
 // SQL Validation using sqlparser AST
 
+/// Validates SQL for the general query endpoint.
+/// Blocks DDL statements (CREATE, DROP, ALTER, TRUNCATE) but allows DML (SELECT, INSERT, UPDATE, DELETE).
+pub fn validate_sql_for_query(sql: &str) -> Result<()> {
+    if sql.trim().is_empty() {
+        return Err(Error::InvalidRequest("SQL cannot be empty".into()));
+    }
+
+    let dialect = BigQueryDialect {};
+
+    let statements = Parser::parse_sql(&dialect, sql)
+        .map_err(|e| Error::InvalidRequest(format!("Invalid SQL syntax: {}", e)))?;
+
+    if statements.len() != 1 {
+        return Err(Error::InvalidRequest(
+            "Only single statements allowed".into(),
+        ));
+    }
+
+    match &statements[0] {
+        // Allow SELECT queries
+        Statement::Query(_) => Ok(()),
+        // Allow DML
+        Statement::Insert(_) => Ok(()),
+        Statement::Update { .. } => Ok(()),
+        Statement::Delete(_) => Ok(()),
+        // Block DDL
+        Statement::CreateTable { .. } => Err(Error::InvalidRequest(
+            "CREATE TABLE not allowed via query endpoint; use bq.createTable".into(),
+        )),
+        Statement::CreateView { .. } => Err(Error::InvalidRequest(
+            "CREATE VIEW not allowed".into(),
+        )),
+        Statement::CreateIndex(_) => Err(Error::InvalidRequest(
+            "CREATE INDEX not allowed".into(),
+        )),
+        Statement::CreateSchema { .. } => Err(Error::InvalidRequest(
+            "CREATE SCHEMA not allowed".into(),
+        )),
+        Statement::Drop { .. } => Err(Error::InvalidRequest(
+            "DROP statements not allowed via query endpoint".into(),
+        )),
+        Statement::AlterTable { .. } => Err(Error::InvalidRequest(
+            "ALTER TABLE not allowed".into(),
+        )),
+        Statement::Truncate { .. } => Err(Error::InvalidRequest(
+            "TRUNCATE not allowed".into(),
+        )),
+        Statement::Merge { .. } => Err(Error::InvalidRequest(
+            "MERGE not allowed".into(),
+        )),
+        Statement::Call(_) => Err(Error::InvalidRequest(
+            "CALL not allowed".into(),
+        )),
+        Statement::Grant { .. } => Err(Error::InvalidRequest(
+            "GRANT not allowed".into(),
+        )),
+        Statement::Revoke { .. } => Err(Error::InvalidRequest(
+            "REVOKE not allowed".into(),
+        )),
+        _ => Err(Error::InvalidRequest(
+            "Statement type not allowed via query endpoint".into(),
+        )),
+    }
+}
+
 pub fn validate_sql_for_define_table(sql: &str) -> Result<()> {
     if sql.trim().is_empty() {
         return Err(Error::InvalidRequest("SQL cannot be empty".into()));
@@ -469,6 +534,129 @@ mod tests {
             "WITH a AS (SELECT 1 AS x), b AS (SELECT x + 1 AS y FROM a) SELECT * FROM b"
         )
         .is_ok());
+    }
+
+    // validate_sql_for_query tests (blocks DDL, allows DML)
+
+    #[test]
+    fn test_query_select_allowed() {
+        assert!(validate_sql_for_query("SELECT 1").is_ok());
+        assert!(validate_sql_for_query("SELECT * FROM users").is_ok());
+    }
+
+    #[test]
+    fn test_query_insert_allowed() {
+        assert!(validate_sql_for_query("INSERT INTO users VALUES (1, 'Alice')").is_ok());
+    }
+
+    #[test]
+    fn test_query_update_allowed() {
+        assert!(validate_sql_for_query("UPDATE users SET name = 'Bob' WHERE id = 1").is_ok());
+    }
+
+    #[test]
+    fn test_query_delete_allowed() {
+        assert!(validate_sql_for_query("DELETE FROM users WHERE id = 1").is_ok());
+    }
+
+    #[test]
+    fn test_query_create_table_blocked() {
+        let result = validate_sql_for_query("CREATE TABLE users (id INT64)");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CREATE TABLE"));
+    }
+
+    #[test]
+    fn test_query_create_view_blocked() {
+        let result = validate_sql_for_query("CREATE VIEW v AS SELECT 1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CREATE VIEW"));
+    }
+
+    #[test]
+    fn test_query_create_index_blocked() {
+        let result = validate_sql_for_query("CREATE INDEX idx ON users(id)");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CREATE INDEX"));
+    }
+
+    #[test]
+    fn test_query_create_schema_blocked() {
+        let result = validate_sql_for_query("CREATE SCHEMA myschema");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CREATE SCHEMA"));
+    }
+
+    #[test]
+    fn test_query_drop_blocked() {
+        let result = validate_sql_for_query("DROP TABLE users");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("DROP"));
+    }
+
+    #[test]
+    fn test_query_alter_table_blocked() {
+        let result = validate_sql_for_query("ALTER TABLE users ADD COLUMN age INT64");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("ALTER TABLE"));
+    }
+
+    #[test]
+    fn test_query_truncate_blocked() {
+        let result = validate_sql_for_query("TRUNCATE TABLE users");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("TRUNCATE"));
+    }
+
+    #[test]
+    fn test_query_merge_blocked() {
+        let result = validate_sql_for_query(
+            "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = s.x"
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("MERGE"));
+    }
+
+    #[test]
+    fn test_query_call_blocked() {
+        let result = validate_sql_for_query("CALL my_procedure()");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CALL"));
+    }
+
+    #[test]
+    fn test_query_grant_blocked() {
+        let result = validate_sql_for_query("GRANT SELECT ON users TO 'user'");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("GRANT"));
+    }
+
+    #[test]
+    fn test_query_revoke_blocked() {
+        let result = validate_sql_for_query("REVOKE SELECT ON users FROM 'user'");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("REVOKE"));
+    }
+
+    #[test]
+    fn test_query_empty_blocked() {
+        let result = validate_sql_for_query("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_query_multi_statement_blocked() {
+        let result = validate_sql_for_query("SELECT 1; SELECT 2");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("single"));
+    }
+
+    #[test]
+    fn test_query_invalid_syntax() {
+        let result = validate_sql_for_query("SELEC FROOM");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("syntax"));
     }
 
     // Path Validation Tests

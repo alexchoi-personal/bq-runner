@@ -1,6 +1,5 @@
-mod lifecycle;
 mod manager;
-mod pipeline;
+pub mod pipeline;
 
-pub use lifecycle::SessionConfig;
 pub use manager::SessionManager;
+pub use pipeline::Pipeline;

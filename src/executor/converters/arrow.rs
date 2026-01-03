@@ -1,6 +1,8 @@
 use arrow::array::*;
 use arrow::datatypes::DataType as ArrowDataType;
 
+use super::base64_encode;
+
 pub fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -> String {
     if array.is_null(row) {
         return "NULL".to_string();
@@ -107,6 +109,18 @@ pub fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -> Strin
                 }
             };
             format!("TIMESTAMP_MICROS({})", micros)
+        }
+        ArrowDataType::Binary => {
+            let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            format!("FROM_BASE64('{}')", base64_encode(arr.value(row)))
+        }
+        ArrowDataType::LargeBinary => {
+            let arr = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            format!("FROM_BASE64('{}')", base64_encode(arr.value(row)))
+        }
+        ArrowDataType::FixedSizeBinary(_) => {
+            let arr = array.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
+            format!("FROM_BASE64('{}')", base64_encode(arr.value(row)))
         }
         _ => "NULL".to_string(),
     }

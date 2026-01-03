@@ -74,7 +74,8 @@ fn extract_table_name_from_create(sql: &str) -> Option<String> {
     };
 
     let end = rest.find(|c: char| c == ' ' || c == '(' || c == '\n')?;
-    Some(rest[..end].to_string())
+    let name = rest[..end].to_string();
+    Some(name.trim_matches('`').to_string())
 }
 
 fn extract_table_name_from_drop(sql: &str) -> Option<String> {
@@ -91,7 +92,8 @@ fn extract_table_name_from_drop(sql: &str) -> Option<String> {
     let end = rest
         .find(|c: char| c == ' ' || c == ';' || c == '\n')
         .unwrap_or(rest.len());
-    Some(rest[..end].to_string())
+    let name = rest[..end].to_string();
+    Some(name.trim_matches('`').to_string())
 }
 
 #[cfg(test)]
@@ -108,6 +110,14 @@ mod tests {
             extract_table_name_from_create("CREATE TABLE IF NOT EXISTS bar (id INT64)"),
             Some("bar".to_string())
         );
+        assert_eq!(
+            extract_table_name_from_create("CREATE TABLE `quoted_table` (id INT64)"),
+            Some("quoted_table".to_string())
+        );
+        assert_eq!(
+            extract_table_name_from_create("CREATE TABLE IF NOT EXISTS `quoted_bar` (id INT64)"),
+            Some("quoted_bar".to_string())
+        );
     }
 
     #[test]
@@ -119,6 +129,14 @@ mod tests {
         assert_eq!(
             extract_table_name_from_drop("DROP TABLE IF EXISTS bar"),
             Some("bar".to_string())
+        );
+        assert_eq!(
+            extract_table_name_from_drop("DROP TABLE `quoted_table`"),
+            Some("quoted_table".to_string())
+        );
+        assert_eq!(
+            extract_table_name_from_drop("DROP TABLE IF EXISTS `quoted_bar`"),
+            Some("quoted_bar".to_string())
         );
     }
 }

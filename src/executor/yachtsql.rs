@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::path::Path;
 
 use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -9,6 +9,7 @@ use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_
 use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+use crate::validation::{open_file_secure, quote_identifier};
 
 pub(crate) trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
@@ -61,7 +62,7 @@ impl YachtSqlExecutor {
         path: &str,
         schema: &[ColumnDef],
     ) -> Result<u64> {
-        let file = File::open(path)
+        let file = open_file_secure(Path::new(path))
             .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
 
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -71,14 +72,15 @@ impl YachtSqlExecutor {
             .build()
             .map_err(|e| Error::Executor(format!("Failed to build parquet reader: {}", e)))?;
 
+        let quoted_table = format!("`{}`", quote_identifier(table_name));
         let columns: Vec<String> = schema
             .iter()
-            .map(|col| format!("{} {}", col.name, col.column_type))
+            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
             .collect();
 
         let create_sql = format!(
             "CREATE OR REPLACE TABLE {} ({})",
-            table_name,
+            quoted_table,
             columns.join(", ")
         );
 
@@ -116,7 +118,7 @@ impl YachtSqlExecutor {
 
             let insert_sql = format!(
                 "INSERT INTO {} VALUES {}",
-                table_name,
+                quoted_table,
                 values_str.join(", ")
             );
 
@@ -194,9 +196,10 @@ impl MockExecutorExt for YachtSqlExecutor {
     }
 
     async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
+        let escaped_name = table_name.replace('\'', "''");
         let schema_sql = format!(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
-            table_name
+            escaped_name
         );
         let schema_result = self.execute_query(&schema_sql).await?;
 
@@ -210,7 +213,8 @@ impl MockExecutorExt for YachtSqlExecutor {
             })
             .collect();
 
-        let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
+        let quoted_name = format!("`{}`", quote_identifier(table_name));
+        let count_sql = format!("SELECT COUNT(*) FROM {}", quoted_name);
         let count_result = self.execute_query(&count_sql).await?;
         let row_count = count_result
             .rows
@@ -913,9 +917,16 @@ mod tests {
     }
 
     #[test]
-    fn test_arrow_value_to_sql_unsupported_type() {
+    fn test_arrow_value_to_sql_binary_type() {
         let arr = arrow::array::BinaryArray::from(vec![Some(b"hello".as_slice())]);
         let result = arrow_value_to_sql(&arr, 0, "BYTES");
+        assert_eq!(result, "FROM_BASE64('aGVsbG8=')");
+    }
+
+    #[test]
+    fn test_arrow_value_to_sql_unsupported_type() {
+        let arr = arrow::array::DurationSecondArray::from(vec![Some(100i64)]);
+        let result = arrow_value_to_sql(&arr, 0, "INTERVAL");
         assert_eq!(result, "NULL");
     }
 

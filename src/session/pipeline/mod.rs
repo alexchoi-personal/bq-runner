@@ -11,8 +11,10 @@ use tokio::sync::mpsc;
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
+use crate::validation::quote_identifier;
 
-pub use types::{ExecutionPlan, PipelineResult, PipelineTable, TableError, TableStatus};
+pub use crate::domain::TableStatus;
+pub use types::{ExecutionPlan, PipelineResult, PipelineTable, TableError};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
@@ -32,6 +34,7 @@ impl Pipeline {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_table_status(&self, name: &str) -> TableStatus {
         self.table_status
             .get(name)
@@ -39,10 +42,12 @@ impl Pipeline {
             .unwrap_or(TableStatus::Pending)
     }
 
+    #[allow(dead_code)]
     pub fn set_table_status(&mut self, name: &str, status: TableStatus) {
         self.table_status.insert(name.to_string(), status);
     }
 
+    #[allow(dead_code)]
     pub fn reset_all_status(&mut self) {
         for name in self.tables.keys() {
             self.table_status.insert(name.clone(), TableStatus::Pending);
@@ -482,6 +487,7 @@ impl Pipeline {
         self.table_status.remove(name);
     }
 
+    #[allow(dead_code)]
     pub fn build_execution_plan(
         &self,
         targets: Option<Vec<String>>,
@@ -514,7 +520,7 @@ impl Pipeline {
 
     pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
         for table_name in self.tables.keys() {
-            let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
+            let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(table_name));
             let _ = executor.execute_statement(&drop_sql).await;
         }
         self.tables.clear();
