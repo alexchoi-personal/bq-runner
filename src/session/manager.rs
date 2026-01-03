@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::RwLock;
 use uuid::Uuid;
 
+use crate::config::SecurityConfig;
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
-use crate::validation::{quote_identifier, validate_table_name};
+use crate::validation::{quote_identifier, validate_sql_for_define_table, validate_table_name};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
@@ -17,6 +19,8 @@ use super::pipeline::{Pipeline, PipelineResult, TableError};
 pub struct SessionManager {
     sessions: RwLock<HashMap<Uuid, Session>>,
     mode: ExecutorMode,
+    start_time: Instant,
+    security_config: SecurityConfig,
 }
 
 struct Session {
@@ -27,9 +31,15 @@ struct Session {
 
 impl SessionManager {
     pub fn new() -> Self {
+        Self::with_security_config(SecurityConfig::default())
+    }
+
+    pub fn with_security_config(security_config: SecurityConfig) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             mode: ExecutorMode::Mock,
+            start_time: Instant::now(),
+            security_config,
         }
     }
 
@@ -41,7 +51,13 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             mode,
+            start_time: Instant::now(),
+            security_config: SecurityConfig::default(),
         }
+    }
+
+    pub fn security_config(&self) -> &SecurityConfig {
+        &self.security_config
     }
 
     fn get_executor(&self, session_id: Uuid) -> Result<Arc<dyn ExecutorBackend>> {
@@ -218,6 +234,7 @@ impl SessionManager {
 
     pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
         validate_table_name(name)?;
+        validate_sql_for_define_table(sql)?;
         self.with_session_mut(session_id, |session| session.pipeline.register_table(name, sql))
     }
 
@@ -1204,5 +1221,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_define_table_validates_sql() {
+        let manager = SessionManager::new();
+        let session_id = manager.create_session().await.unwrap();
+
+        let result = manager.define_table(session_id, "valid_table", "SELECT 1 AS id");
+        assert!(result.is_ok());
+
+        let result = manager.define_table(session_id, "bad_table", "DROP TABLE users");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_manager_with_security_config() {
+        let config = SecurityConfig {
+            allowed_paths: vec![std::path::PathBuf::from("/tmp")],
+            block_symlinks: false,
+        };
+        let manager = SessionManager::with_security_config(config);
+        assert!(!manager.security_config().block_symlinks);
     }
 }

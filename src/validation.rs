@@ -1,3 +1,4 @@
+use crate::config::SecurityConfig;
 use crate::error::{Error, Result};
 use regex::Regex;
 use sqlparser::ast::{Expr, Query, SelectItem, SetExpr, Statement, TableFactor};
@@ -7,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+
+pub use crate::config::SecurityConfig as SecurityConfigReexport;
 
 static TABLE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$").unwrap()
@@ -21,13 +24,6 @@ pub fn validate_table_name(name: &str) -> Result<()> {
 
 pub fn quote_identifier(name: &str) -> String {
     name.replace('`', "``")
-}
-
-// Security config for path validation
-#[derive(Debug, Clone, Default)]
-pub struct SecurityConfig {
-    pub allowed_paths: Vec<PathBuf>,
-    pub block_symlinks: bool,
 }
 
 // SQL Validation using sqlparser AST
@@ -612,6 +608,6 @@ mod tests {
     fn test_security_config_default() {
         let config = SecurityConfig::default();
         assert!(config.allowed_paths.is_empty());
-        assert!(!config.block_symlinks);
+        assert!(config.block_symlinks);  // Default is true (secure by default)
     }
 }

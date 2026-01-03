@@ -1,12 +1,20 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::methods::RpcMethods;
 use super::types::{RpcRequest, RpcResponse};
+
+fn extract_session_id(params: &Option<serde_json::Value>) -> Option<String> {
+    params.as_ref()
+        .and_then(|p| p.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
 
 pub async fn handle_websocket(socket: WebSocket, methods: Arc<RpcMethods>) {
     let (mut sender, mut receiver) = socket.split();
@@ -55,13 +63,45 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
     let id = request.id.clone().unwrap_or(Value::Null);
     let method_name = request.method.clone();
 
-    let session_id = request
-        .params
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let session_id = extract_session_id(&Some(request.params.clone()));
+    let start = Instant::now();
 
-    match methods.dispatch(&request.method, request.params).await {
+    info!(
+        target: "audit",
+        request_id = %request_id,
+        method = %request.method,
+        session_id = ?session_id,
+        "request_received"
+    );
+
+    let result = methods.dispatch(&request.method, request.params).await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    match &result {
+        Ok(_) => info!(
+            target: "audit",
+            request_id = %request_id,
+            method = %method_name,
+            session_id = ?session_id,
+            duration_ms = duration_ms,
+            status = "success",
+            "request_completed"
+        ),
+        Err(e) => warn!(
+            target: "audit",
+            request_id = %request_id,
+            method = %method_name,
+            session_id = ?session_id,
+            duration_ms = duration_ms,
+            status = "error",
+            error = %e,
+            "request_completed"
+        ),
+    }
+
+    match result {
         Ok(result) => RpcResponse::success(id, result),
         Err(e) => {
             if matches!(e, crate::error::Error::InvalidRequest(ref msg) if msg.starts_with("Unknown method"))
