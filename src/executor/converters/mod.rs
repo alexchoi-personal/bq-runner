@@ -2,19 +2,22 @@ mod arrow;
 mod json;
 mod yacht;
 
+use std::borrow::Cow;
+
 pub(crate) use arrow::arrow_value_to_sql;
 pub use json::json_to_sql_value;
 pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_to_json};
 
-fn escape_sql_string(s: &str) -> String {
+fn escape_sql_string(s: &str) -> Cow<'_, str> {
+    let needs_escaping = s.chars().any(|c| c == '\'' || c == '\\' || c == '\0');
+    if !needs_escaping {
+        return Cow::Borrowed(s);
+    }
+
     let escaped_count = s
         .chars()
         .filter(|&c| c == '\'' || c == '\\' || c == '\0')
         .count();
-    if escaped_count == 0 {
-        return s.to_string();
-    }
-
     let mut result = String::with_capacity(s.len() + escaped_count);
     for c in s.chars() {
         match c {
@@ -24,7 +27,7 @@ fn escape_sql_string(s: &str) -> String {
             _ => result.push(c),
         }
     }
-    result
+    Cow::Owned(result)
 }
 
 #[cfg(test)]

@@ -161,16 +161,37 @@ impl SessionManager {
     pub fn cleanup_expired_sessions(&self) -> usize {
         let timeout = Duration::from_secs(self.session_config.session_timeout_secs);
         let now = Instant::now();
+
+        let expired_ids: Vec<Uuid> = {
+            let sessions = self.sessions.read();
+            sessions
+                .iter()
+                .filter_map(|(id, session)| {
+                    if now.duration_since(session.last_accessed()) > timeout {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        if expired_ids.is_empty() {
+            return 0;
+        }
+
         let mut sessions = self.sessions.write();
-        let before = sessions.len();
-        sessions.retain(|id, session| {
-            let expired = now.duration_since(session.last_accessed()) > timeout;
-            if expired {
-                debug!(session_id = %id, "Session expired and removed");
+        let mut removed = 0;
+        for id in expired_ids {
+            if let Some(session) = sessions.get(&id) {
+                if now.duration_since(session.last_accessed()) > timeout {
+                    sessions.remove(&id);
+                    debug!(session_id = %id, "Session expired and removed");
+                    removed += 1;
+                }
             }
-            !expired
-        });
-        let removed = before - sessions.len();
+        }
+
         if removed > 0 {
             info!(
                 removed = removed,

@@ -95,22 +95,46 @@ impl YachtSqlExecutor {
                 continue;
             }
 
-            let mut all_values: Vec<String> = Vec::with_capacity(batch.num_rows());
+            let num_cols = schema.len().min(batch.num_columns());
+            let columns: Vec<_> = (0..num_cols).map(|i| batch.column(i)).collect();
+            let bq_types: Vec<_> = schema
+                .iter()
+                .take(num_cols)
+                .map(|c| c.column_type.as_str())
+                .collect();
+
+            let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * num_cols * 16);
+            let mut rows_in_batch = 0;
+
             for row_idx in 0..batch.num_rows() {
-                let mut row_values = Vec::with_capacity(schema.len());
-                for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
-                    let col = batch.column(col_idx);
-                    let bq_type = col_schema.column_type.as_str();
-                    let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_type);
-                    row_values.push(value);
+                if rows_in_batch > 0 {
+                    batch_buffer.push_str(", ");
                 }
-                all_values.push(format!("({})", row_values.join(", ")));
+                batch_buffer.push('(');
+                for (col_idx, col) in columns.iter().enumerate() {
+                    if col_idx > 0 {
+                        batch_buffer.push_str(", ");
+                    }
+                    let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_types[col_idx]);
+                    batch_buffer.push_str(&value);
+                }
+                batch_buffer.push(')');
+                rows_in_batch += 1;
+
+                if rows_in_batch >= INSERT_BATCH_SIZE {
+                    let insert_sql =
+                        format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
+                    self.executor
+                        .execute_sql(&insert_sql)
+                        .await
+                        .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+                    batch_buffer.clear();
+                    rows_in_batch = 0;
+                }
             }
 
-            for chunk in all_values.chunks(INSERT_BATCH_SIZE) {
-                let insert_sql =
-                    format!("INSERT INTO {} VALUES {}", quoted_table, chunk.join(", "));
-
+            if rows_in_batch > 0 {
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
                 self.executor
                     .execute_sql(&insert_sql)
                     .await
@@ -196,8 +220,12 @@ impl MockExecutorExt for YachtSqlExecutor {
             .rows
             .into_iter()
             .map(|row| {
-                let name = row[0].as_str().unwrap_or("").to_string();
-                let row_count = row[1].as_u64().unwrap_or(0);
+                let name = row
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let row_count = row.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
                 (name, row_count)
             })
             .collect();
@@ -217,8 +245,16 @@ impl MockExecutorExt for YachtSqlExecutor {
             .rows
             .into_iter()
             .map(|row| {
-                let name = row[0].as_str().unwrap_or("").to_string();
-                let col_type = row[1].as_str().unwrap_or("STRING").to_string();
+                let name = row
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let col_type = row
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("STRING")
+                    .to_string();
                 (name, col_type)
             })
             .collect();

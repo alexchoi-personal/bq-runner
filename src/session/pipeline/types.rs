@@ -5,13 +5,13 @@ use serde_json::Value;
 use crate::domain::{ColumnDef, TableError};
 
 #[derive(Debug, Clone)]
-pub struct PipelineTable {
-    pub name: String,
-    pub sql: Option<String>,
-    pub schema: Option<Vec<ColumnDef>>,
-    pub rows: Vec<Value>,
-    pub dependencies: Vec<String>,
-    pub is_source: bool,
+pub(crate) struct PipelineTable {
+    pub(crate) name: String,
+    pub(crate) sql: Option<String>,
+    pub(crate) schema: Option<Vec<ColumnDef>>,
+    pub(crate) rows: Vec<Value>,
+    pub(crate) dependencies: Vec<String>,
+    pub(crate) is_source: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

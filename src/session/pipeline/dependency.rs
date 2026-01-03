@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use parking_lot::Mutex;
 use sqlparser::ast::{
@@ -13,7 +13,7 @@ const SQL_CACHE_SIZE_PER_SHARD: usize = 64;
 const CACHE_SHARDS: usize = 8;
 
 struct ParseCacheShard {
-    entries: HashMap<u64, Vec<Statement>>,
+    entries: HashMap<u64, Arc<Vec<Statement>>>,
     order: VecDeque<u64>,
 }
 
@@ -25,11 +25,11 @@ impl ParseCacheShard {
         }
     }
 
-    fn get(&mut self, hash: u64) -> Option<Vec<Statement>> {
+    fn get(&self, hash: u64) -> Option<Arc<Vec<Statement>>> {
         self.entries.get(&hash).cloned()
     }
 
-    fn insert(&mut self, hash: u64, statements: Vec<Statement>) {
+    fn insert(&mut self, hash: u64, statements: Arc<Vec<Statement>>) {
         if self.entries.contains_key(&hash) {
             return;
         }
@@ -67,23 +67,23 @@ fn hash_sql(sql: &str) -> u64 {
     hasher.finish()
 }
 
-fn parse_sql_cached(sql: &str) -> Option<Vec<Statement>> {
+fn parse_sql_cached(sql: &str) -> Option<Arc<Vec<Statement>>> {
     let hash = hash_sql(sql);
     let shard = PARSE_CACHE.get_shard(hash);
 
     {
-        let mut cache = shard.lock();
+        let cache = shard.lock();
         if let Some(statements) = cache.get(hash) {
             return Some(statements);
         }
     }
 
     let dialect = BigQueryDialect {};
-    let statements = Parser::parse_sql(&dialect, sql).ok()?;
+    let statements = Arc::new(Parser::parse_sql(&dialect, sql).ok()?);
 
     {
         let mut cache = shard.lock();
-        cache.insert(hash, statements.clone());
+        cache.insert(hash, Arc::clone(&statements));
     }
 
     Some(statements)
@@ -96,7 +96,7 @@ pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, Strin
 
     let mut cte_names = HashSet::new();
     let mut referenced_tables = HashSet::new();
-    for statement in &statements {
+    for statement in statements.iter() {
         if let Statement::Query(query) = statement {
             collect_cte_names_from_query(query, &mut cte_names);
         }

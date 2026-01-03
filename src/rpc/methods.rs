@@ -56,27 +56,28 @@ fn parse_insert_rows(rows: &[Value]) -> Result<ParsedRows> {
     }
 
     let (column_names, values) = if expects_object {
-        let first_obj = first_row.as_object().unwrap();
+        let first_obj = first_row
+            .as_object()
+            .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
         let cols: Vec<String> = first_obj.keys().cloned().collect();
-        let vals: Vec<String> = rows
-            .iter()
-            .map(|row| {
-                let obj = row.as_object().unwrap();
-                let row_vals: Vec<String> =
-                    cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
-                format!("({})", row_vals.join(", "))
-            })
-            .collect();
+        let mut vals: Vec<String> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let obj = row
+                .as_object()
+                .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
+            let row_vals: Vec<String> = cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
+            vals.push(format!("({})", row_vals.join(", ")));
+        }
         (Some(cols), vals)
     } else {
-        let vals: Vec<String> = rows
-            .iter()
-            .map(|row| {
-                let arr = row.as_array().unwrap();
-                let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                format!("({})", row_vals.join(", "))
-            })
-            .collect();
+        let mut vals: Vec<String> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let arr = row
+                .as_array()
+                .ok_or_else(|| Error::InvalidRequest("Expected array row format".into()))?;
+            let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
+            vals.push(format!("({})", row_vals.join(", ")));
+        }
         (None, vals)
     };
 

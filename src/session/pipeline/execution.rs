@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::time::timeout;
+use tracing::{debug, instrument};
 
 use crate::error::{Error, Result};
 use crate::executor::converters::json_to_sql_value;
@@ -10,11 +11,15 @@ use crate::validation::quote_identifier;
 
 use super::types::{PipelineTable, DEFAULT_TABLE_TIMEOUT_SECS};
 
+#[instrument(skip(executor, table), fields(table_name = %table.name, is_source = table.is_source))]
 pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+    let start = Instant::now();
     let timeout_duration = Duration::from_secs(DEFAULT_TABLE_TIMEOUT_SECS);
-    timeout(timeout_duration, execute_table_inner(executor, table))
+    let result = timeout(timeout_duration, execute_table_inner(executor, table))
         .await
-        .map_err(|_| Error::RequestTimeout(DEFAULT_TABLE_TIMEOUT_SECS))?
+        .map_err(|_| Error::RequestTimeout(DEFAULT_TABLE_TIMEOUT_SECS))?;
+    debug!(elapsed_ms = %start.elapsed().as_millis(), "Table execution completed");
+    result
 }
 
 async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
@@ -60,21 +65,38 @@ async fn insert_rows_batched(
     quoted_name: &str,
     rows: &[Vec<Value>],
 ) -> Result<()> {
-    let mut batch = Vec::with_capacity(INSERT_BATCH_SIZE.min(rows.len()));
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let avg_cols = rows.first().map(|r| r.len()).unwrap_or(4);
+    let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * avg_cols * 16);
+    let mut rows_in_batch = 0;
 
     for row in rows {
-        let vals: Vec<String> = row.iter().map(json_to_sql_value).collect();
-        batch.push(format!("({})", vals.join(", ")));
+        if rows_in_batch > 0 {
+            batch_buffer.push_str(", ");
+        }
+        batch_buffer.push('(');
+        for (i, val) in row.iter().enumerate() {
+            if i > 0 {
+                batch_buffer.push_str(", ");
+            }
+            batch_buffer.push_str(&json_to_sql_value(val));
+        }
+        batch_buffer.push(')');
+        rows_in_batch += 1;
 
-        if batch.len() >= INSERT_BATCH_SIZE {
-            let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+        if rows_in_batch >= INSERT_BATCH_SIZE {
+            let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
             executor.execute_statement(&insert_sql).await?;
-            batch.clear();
+            batch_buffer.clear();
+            rows_in_batch = 0;
         }
     }
 
-    if !batch.is_empty() {
-        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+    if rows_in_batch > 0 {
+        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
         executor.execute_statement(&insert_sql).await?;
     }
 
@@ -87,17 +109,38 @@ async fn insert_source_rows_batched(
     table_name: &str,
     rows: &[Value],
 ) -> Result<()> {
-    let mut batch = Vec::with_capacity(INSERT_BATCH_SIZE.min(rows.len()));
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let avg_cols = rows
+        .first()
+        .and_then(|r| r.as_array())
+        .map(|a| a.len())
+        .unwrap_or(4);
+    let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * avg_cols * 16);
+    let mut rows_in_batch = 0;
 
     for (idx, row) in rows.iter().enumerate() {
         if let Value::Array(arr) = row {
-            let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-            batch.push(format!("({})", vals.join(", ")));
+            if rows_in_batch > 0 {
+                batch_buffer.push_str(", ");
+            }
+            batch_buffer.push('(');
+            for (i, val) in arr.iter().enumerate() {
+                if i > 0 {
+                    batch_buffer.push_str(", ");
+                }
+                batch_buffer.push_str(&json_to_sql_value(val));
+            }
+            batch_buffer.push(')');
+            rows_in_batch += 1;
 
-            if batch.len() >= INSERT_BATCH_SIZE {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+            if rows_in_batch >= INSERT_BATCH_SIZE {
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
                 executor.execute_statement(&insert_sql).await?;
-                batch.clear();
+                batch_buffer.clear();
+                rows_in_batch = 0;
             }
         } else {
             return Err(Error::Executor(format!(
@@ -116,8 +159,8 @@ async fn insert_source_rows_batched(
         }
     }
 
-    if !batch.is_empty() {
-        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+    if rows_in_batch > 0 {
+        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
         executor.execute_statement(&insert_sql).await?;
     }
 

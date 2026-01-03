@@ -14,7 +14,8 @@ use crate::executor::{ExecutorBackend, ExecutorMode};
 use crate::validation::quote_identifier;
 
 pub use crate::domain::{TableError, TableStatus};
-pub use types::{PipelineResult, PipelineTable};
+pub use types::PipelineResult;
+pub(crate) use types::PipelineTable;
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
