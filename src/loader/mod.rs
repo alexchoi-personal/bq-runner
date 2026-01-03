@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use glob::glob;
 
+use crate::config::SecurityConfig;
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+use crate::validation::validate_path;
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -87,12 +89,23 @@ impl SqlLoader {
     }
 }
 
+/// Discover files with security validation.
+/// Validates the root path against allowed paths before scanning.
+pub fn discover_files_secure(root_path: &str, config: &SecurityConfig) -> Result<DiscoveredFiles> {
+    let validated_root = validate_path(root_path, config)?;
+    discover_files_internal(&validated_root)
+}
+
 pub fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
     let root = Path::new(root_path);
+    discover_files_internal(root)
+}
+
+fn discover_files_internal(root: &Path) -> Result<DiscoveredFiles> {
     if !root.is_dir() {
         return Err(Error::Executor(format!(
             "Root path is not a directory: {}",
-            root_path
+            root.display()
         )));
     }
 
@@ -158,8 +171,18 @@ pub fn discover_sql_files(root_path: &str) -> Result<Vec<SqlFile>> {
     Ok(discovered.sql_files)
 }
 
+pub fn discover_sql_files_secure(root_path: &str, config: &SecurityConfig) -> Result<Vec<SqlFile>> {
+    let discovered = discover_files_secure(root_path, config)?;
+    Ok(discovered.sql_files)
+}
+
 pub fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files(root_path)?;
+    Ok(discovered.parquet_files)
+}
+
+pub fn discover_parquet_files_secure(root_path: &str, config: &SecurityConfig) -> Result<Vec<ParquetFile>> {
+    let discovered = discover_files_secure(root_path, config)?;
     Ok(discovered.parquet_files)
 }
 

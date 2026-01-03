@@ -12,12 +12,13 @@ use clap::{Parser, ValueEnum};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
+use tokio::signal;
 use tracing::{error, info, Level};
 use tracing_subscriber::EnvFilter;
 
 use bq_runner::executor::ExecutorMode;
 use bq_runner::rpc::{handle_websocket, process_message, RpcMethods};
-use bq_runner::SessionManager;
+use bq_runner::{Config, LogFormat, SessionManager};
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum Backend {
@@ -95,6 +96,9 @@ struct Args {
         help = "Execution backend: mock (YachtSQL) or bigquery (real BigQuery)"
     )]
     backend: Backend,
+
+    #[arg(long, help = "Path to configuration file (TOML)")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -106,39 +110,71 @@ struct AppState {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Load configuration
+    let config = Config::load(args.config.as_deref())?;
+
+    // Initialize tracing based on config
+    init_tracing(&config);
+
     let executor_mode: ExecutorMode = args.backend.into();
-    let session_manager = Arc::new(SessionManager::with_mode(executor_mode));
+    let session_manager = Arc::new(
+        SessionManager::with_mode_and_security(executor_mode, config.security.clone())
+    );
     let methods = Arc::new(RpcMethods::new(session_manager));
 
     match args.transport {
         Transport::Stdio => run_stdio_server(methods).await,
         Transport::WebSocket { port } => {
-            init_tracing();
             log_backend(executor_mode);
+            log_security_config(&config);
             run_http_server(port, methods).await
         }
         Transport::Unix { path } => {
-            init_tracing();
             log_backend(executor_mode);
+            log_security_config(&config);
             run_unix_server(&path, methods).await
         }
     }
 }
 
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(Level::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+fn init_tracing(config: &Config) {
+    let filter = EnvFilter::builder()
+        .with_default_directive(Level::INFO.into())
+        .from_env_lossy();
+
+    match config.logging.format {
+        LogFormat::Json => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .json()
+                .init();
+        }
+        LogFormat::Text => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .init();
+        }
+    }
 }
 
 fn log_backend(mode: ExecutorMode) {
     match mode {
         ExecutorMode::Mock => info!("Starting with mock backend (YachtSQL)"),
         ExecutorMode::BigQuery => info!("Starting with BigQuery backend"),
+    }
+}
+
+fn log_security_config(config: &Config) {
+    if config.security.allowed_paths.is_empty() {
+        info!("Security: No allowed_paths configured - path validation disabled");
+    } else {
+        info!(
+            "Security: Path validation enabled for {} directories",
+            config.security.allowed_paths.len()
+        );
+    }
+    if config.logging.audit_enabled {
+        info!("Audit logging: enabled");
     }
 }
 
@@ -234,13 +270,49 @@ async fn run_http_server(port: u16, methods: Arc<RpcMethods>) -> anyhow::Result<
     info!("Listening on ws://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    // Graceful shutdown on SIGTERM/SIGINT
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    info!("Server shutdown complete");
     Ok(())
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received Ctrl+C, initiating graceful shutdown");
+        }
+        _ = terminate => {
+            info!("Received SIGTERM, initiating graceful shutdown");
+        }
+    }
+}
+
+// Maximum WebSocket message size: 16MB
+const MAX_WS_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.max_message_size(usize::MAX)
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| handle_websocket(socket, state.methods))
 }
 

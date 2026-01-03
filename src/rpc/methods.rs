@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::{Error, Result};
 use crate::session::SessionManager;
 use crate::utils::json_to_sql_value;
+use crate::validation::validate_table_name;
 
 pub trait HasSessionId {
     fn session_id(&self) -> &str;
@@ -240,6 +241,14 @@ impl RpcMethods {
         let p: CreateTableParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
+        // Validate table name to prevent SQL injection
+        validate_table_name(&p.table_name)?;
+
+        // Validate column names
+        for col in &p.schema {
+            validate_table_name(&col.name)?;
+        }
+
         let columns: Vec<String> = p
             .schema
             .iter()
@@ -258,6 +267,9 @@ impl RpcMethods {
     async fn insert(&self, params: Value) -> Result<Value> {
         let p: InsertParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
+
+        // Validate table name to prevent SQL injection
+        validate_table_name(&p.table_name)?;
 
         if p.rows.is_empty() {
             return Ok(json!(InsertResult { inserted_rows: 0 }));

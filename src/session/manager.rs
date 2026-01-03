@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::config::SecurityConfig;
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
-use crate::validation::{quote_identifier, validate_sql_for_define_table, validate_table_name};
+use crate::validation::{quote_identifier, validate_path, validate_sql_for_define_table, validate_table_name};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
@@ -53,6 +53,15 @@ impl SessionManager {
             mode,
             start_time: Instant::now(),
             security_config: SecurityConfig::default(),
+        }
+    }
+
+    pub fn with_mode_and_security(mode: ExecutorMode, security_config: SecurityConfig) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            mode,
+            start_time: Instant::now(),
+            security_config,
         }
     }
 
@@ -281,8 +290,13 @@ impl SessionManager {
         path: &str,
         schema: &[crate::domain::ColumnDef],
     ) -> Result<u64> {
+        let validated_path = if !self.security_config.allowed_paths.is_empty() {
+            validate_path(path, &self.security_config)?
+        } else {
+            std::path::PathBuf::from(path)
+        };
         let executor = self.get_executor(session_id)?;
-        executor.load_parquet(table_name, path, schema).await
+        executor.load_parquet(table_name, validated_path.to_string_lossy().as_ref(), schema).await
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
@@ -335,7 +349,11 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<DagTableInfo>, Vec<SqlTableInfo>)> {
-        let sql_files = loader::discover_sql_files(root_path)?;
+        let sql_files = if !self.security_config.allowed_paths.is_empty() {
+            loader::discover_sql_files_secure(root_path, &self.security_config)?
+        } else {
+            loader::discover_sql_files(root_path)?
+        };
 
         let tables: Vec<DagTableDef> = sql_files
             .iter()
@@ -367,7 +385,11 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = loader::discover_parquet_files(root_path)?;
+        let parquet_files = if !self.security_config.allowed_paths.is_empty() {
+            loader::discover_parquet_files_secure(root_path, &self.security_config)?
+        } else {
+            loader::discover_parquet_files(root_path)?
+        };
         let executor = self.get_executor(session_id)?;
         self.load_parquet_files_parallel(executor, parquet_files)
             .await
@@ -413,7 +435,11 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<ParquetTableInfo>, Vec<SqlTableInfo>, Vec<DagTableInfo>)> {
-        let discovered = loader::discover_files(root_path)?;
+        let discovered = if !self.security_config.allowed_paths.is_empty() {
+            loader::discover_files_secure(root_path, &self.security_config)?
+        } else {
+            loader::discover_files(root_path)?
+        };
         let executor = self.get_executor(session_id)?;
         let parquet_results = self
             .load_parquet_files_parallel(executor, discovered.parquet_files)
