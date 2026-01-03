@@ -57,6 +57,8 @@ pub struct SessionConfig {
     pub session_timeout_secs: u64,
     #[serde(default = "default_cleanup_interval_secs")]
     pub cleanup_interval_secs: u64,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
 }
 
 fn default_max_sessions() -> usize {
@@ -71,12 +73,17 @@ fn default_cleanup_interval_secs() -> u64 {
     60 // 1 minute
 }
 
+fn default_max_concurrency() -> usize {
+    8
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_sessions: default_max_sessions(),
             session_timeout_secs: default_session_timeout_secs(),
             cleanup_interval_secs: default_cleanup_interval_secs(),
+            max_concurrency: default_max_concurrency(),
         }
     }
 }
@@ -212,6 +219,12 @@ impl Config {
                     "Invalid BQ_RUNNER_SESSION_TIMEOUT_SECS value '{}', using default",
                     val
                 ),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_MAX_CONCURRENCY") {
+            match val.parse() {
+                Ok(n) => config.session.max_concurrency = n,
+                Err(_) => warn!("Invalid BQ_MAX_CONCURRENCY value '{}', using default", val),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_REQUEST_TIMEOUT_SECS") {

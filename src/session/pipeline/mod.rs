@@ -13,8 +13,8 @@ use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
 use crate::validation::quote_identifier;
 
-pub use crate::domain::TableStatus;
-pub use types::{PipelineResult, PipelineTable, TableError};
+pub use crate::domain::{TableError, TableStatus};
+pub use types::{PipelineResult, PipelineTable};
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
@@ -24,13 +24,21 @@ use execution::execute_table;
 pub struct Pipeline {
     tables: HashMap<String, PipelineTable>,
     table_status: HashMap<String, TableStatus>,
+    table_name_lookup: HashMap<String, String>,
+    max_concurrency: usize,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
+        Self::with_max_concurrency(DEFAULT_MAX_CONCURRENCY)
+    }
+
+    pub fn with_max_concurrency(max_concurrency: usize) -> Self {
         Self {
             tables: HashMap::new(),
             table_status: HashMap::new(),
+            table_name_lookup: HashMap::new(),
+            max_concurrency,
         }
     }
 
@@ -47,6 +55,8 @@ impl Pipeline {
                 dependencies: vec![],
                 is_source,
             };
+            self.table_name_lookup
+                .insert(table.name.to_uppercase(), table.name.clone());
             self.tables.insert(table.name.clone(), table);
             self.table_status
                 .insert(def.name.clone(), TableStatus::Pending);
@@ -57,7 +67,7 @@ impl Pipeline {
                 table
                     .sql
                     .as_ref()
-                    .map(|sql| extract_dependencies(sql, &self.tables))
+                    .map(|sql| extract_dependencies(sql, &self.table_name_lookup))
             } else {
                 None
             };
@@ -229,19 +239,10 @@ impl Pipeline {
             })
             .collect();
 
-        let max_concurrency = match std::env::var("BQ_MAX_CONCURRENCY") {
-            Ok(s) => s.parse().unwrap_or_else(|_| {
-                tracing::warn!(
-                    value = %s,
-                    "Invalid BQ_MAX_CONCURRENCY value, using default {}",
-                    DEFAULT_MAX_CONCURRENCY
-                );
-                DEFAULT_MAX_CONCURRENCY
-            }),
-            Err(_) => DEFAULT_MAX_CONCURRENCY,
-        };
-
-        let state = Arc::new(Mutex::new(StreamState::new(pending_deps, max_concurrency)));
+        let state = Arc::new(Mutex::new(StreamState::new(
+            pending_deps,
+            self.max_concurrency,
+        )));
 
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
@@ -456,11 +457,13 @@ impl Pipeline {
             dependencies: vec![],
             is_source: false,
         };
+        self.table_name_lookup
+            .insert(name.to_uppercase(), name.to_string());
         self.tables.insert(name.to_string(), table);
         self.table_status
             .insert(name.to_string(), TableStatus::Pending);
 
-        let deps = dependency::extract_dependencies(sql, &self.tables);
+        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup);
         if let Some(table) = self.tables.get_mut(name) {
             table.dependencies = deps.clone();
         }
@@ -473,6 +476,7 @@ impl Pipeline {
     pub fn remove_table(&mut self, name: &str) {
         self.tables.remove(name);
         self.table_status.remove(name);
+        self.table_name_lookup.remove(&name.to_uppercase());
     }
 
     pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
@@ -484,11 +488,13 @@ impl Pipeline {
         }
         self.tables.clear();
         self.table_status.clear();
+        self.table_name_lookup.clear();
     }
 
     pub fn clear_state(&mut self) {
         self.tables.clear();
         self.table_status.clear();
+        self.table_name_lookup.clear();
     }
 }
 
@@ -2076,18 +2082,17 @@ mod tests {
         drop(tx);
 
         let mut received = 0;
-        let mut completed_count = 0;
         while let Some((name, outcome)) = rx.recv().await {
             received += 1;
-            {
+            let completed_count = {
                 let mut s = state.lock();
                 s.finish_in_flight(&name);
                 match &outcome {
                     Ok(()) => s.mark_completed(&name),
                     Err(_) => s.mark_blocked(&name),
                 }
-                completed_count = s.completed.len() + s.blocked.len();
-            }
+                s.completed.len() + s.blocked.len()
+            };
             if completed_count >= 10 {
                 break;
             }

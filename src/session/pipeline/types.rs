@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::domain::ColumnDef;
+use crate::domain::{ColumnDef, TableError};
 
 #[derive(Debug, Clone)]
 pub struct PipelineTable {
@@ -19,12 +19,6 @@ pub struct PipelineResult {
     pub succeeded: Vec<String>,
     pub failed: Vec<TableError>,
     pub skipped: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct TableError {
-    pub table: String,
-    pub error: String,
 }
 
 impl PipelineResult {

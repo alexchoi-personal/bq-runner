@@ -99,9 +99,9 @@ impl YachtSqlExecutor {
                 continue;
             }
 
-            let mut all_values: Vec<Vec<String>> = Vec::new();
+            let mut all_values: Vec<Vec<String>> = Vec::with_capacity(batch.num_rows());
             for row_idx in 0..batch.num_rows() {
-                let mut row_values = Vec::new();
+                let mut row_values = Vec::with_capacity(schema.len());
                 for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
                     let col = batch.column(col_idx);
                     let bq_type = col_schema.column_type.as_str();

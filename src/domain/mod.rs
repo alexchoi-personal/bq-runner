@@ -214,6 +214,12 @@ pub struct ParquetTableInfo {
     pub row_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TableError {
+    pub table: String,
+    pub error: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

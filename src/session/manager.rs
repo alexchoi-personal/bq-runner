@@ -34,6 +34,41 @@ pub struct SessionManager {
     health_executor: OnceCell<Arc<dyn ExecutorBackend>>,
 }
 
+#[derive(Default)]
+pub struct SessionManagerBuilder {
+    mode: Option<ExecutorMode>,
+    security_config: Option<SecurityConfig>,
+    session_config: Option<SessionConfig>,
+}
+
+impl SessionManagerBuilder {
+    pub fn mode(mut self, mode: ExecutorMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    pub fn security_config(mut self, config: SecurityConfig) -> Self {
+        self.security_config = Some(config);
+        self
+    }
+
+    pub fn session_config(mut self, config: SessionConfig) -> Self {
+        self.session_config = Some(config);
+        self
+    }
+
+    pub fn build(self) -> SessionManager {
+        SessionManager {
+            sessions: RwLock::new(HashMap::new()),
+            mode: self.mode.unwrap_or(ExecutorMode::Mock),
+            start_time: Instant::now(),
+            security_config: self.security_config.unwrap_or_default(),
+            session_config: self.session_config.unwrap_or_default(),
+            health_executor: OnceCell::new(),
+        }
+    }
+}
+
 struct Session {
     executor: Arc<dyn ExecutorBackend>,
     mock_executor: Option<Arc<YachtSqlExecutor>>,
@@ -46,11 +81,12 @@ impl Session {
     fn new(
         executor: Arc<dyn ExecutorBackend>,
         mock_executor: Option<Arc<YachtSqlExecutor>>,
+        max_concurrency: usize,
     ) -> Self {
         Self {
             executor,
             mock_executor,
-            pipeline: Pipeline::new(),
+            pipeline: Pipeline::with_max_concurrency(max_concurrency),
             last_accessed_nanos: AtomicU64::new(0),
             created_at: Instant::now(),
         }
@@ -69,18 +105,27 @@ impl Session {
 
 impl SessionManager {
     pub fn new() -> Self {
-        Self::with_security_config(SecurityConfig::default())
+        Self::builder().build()
+    }
+
+    pub fn builder() -> SessionManagerBuilder {
+        SessionManagerBuilder::default()
     }
 
     pub fn with_security_config(security_config: SecurityConfig) -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode: ExecutorMode::Mock,
-            start_time: Instant::now(),
-            security_config,
-            session_config: SessionConfig::default(),
-            health_executor: OnceCell::new(),
-        }
+        Self::builder().security_config(security_config).build()
+    }
+
+    pub fn with_full_config(
+        mode: ExecutorMode,
+        security_config: SecurityConfig,
+        session_config: SessionConfig,
+    ) -> Self {
+        Self::builder()
+            .mode(mode)
+            .security_config(security_config)
+            .session_config(session_config)
+            .build()
     }
 
     pub fn session_count(&self) -> usize {
@@ -103,43 +148,6 @@ impl SessionManager {
             })
             .await?;
         executor.execute_query("SELECT 1").await.map(|_| ())
-    }
-
-    pub fn with_mode(mode: ExecutorMode) -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode,
-            start_time: Instant::now(),
-            security_config: SecurityConfig::default(),
-            session_config: SessionConfig::default(),
-            health_executor: OnceCell::new(),
-        }
-    }
-
-    pub fn with_mode_and_security(mode: ExecutorMode, security_config: SecurityConfig) -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode,
-            start_time: Instant::now(),
-            security_config,
-            session_config: SessionConfig::default(),
-            health_executor: OnceCell::new(),
-        }
-    }
-
-    pub fn with_full_config(
-        mode: ExecutorMode,
-        security_config: SecurityConfig,
-        session_config: SessionConfig,
-    ) -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode,
-            start_time: Instant::now(),
-            security_config,
-            session_config,
-            health_executor: OnceCell::new(),
-        }
     }
 
     pub fn security_config(&self) -> &SecurityConfig {
@@ -239,7 +247,7 @@ impl SessionManager {
                 ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
             };
 
-        let session = Session::new(executor, mock_executor);
+        let session = Session::new(executor, mock_executor, self.session_config.max_concurrency);
 
         let session_count = {
             let mut sessions = self.sessions.write();
@@ -835,7 +843,7 @@ mod tests {
         assert_eq!(query_result.rows[0][0].as_i64().unwrap(), 1);
         assert_eq!(query_result.rows[0][1].as_str().unwrap(), "Alice");
         assert_eq!(query_result.rows[0][2].as_f64().unwrap(), 95.5);
-        assert_eq!(query_result.rows[0][3].as_bool().unwrap(), true);
+        assert!(query_result.rows[0][3].as_bool().unwrap());
 
         assert_eq!(query_result.rows[1][0].as_i64().unwrap(), 2);
         assert_eq!(query_result.rows[1][1].as_str().unwrap(), "Bob");
@@ -1137,8 +1145,7 @@ mod tests {
             let expected = {
                 let step1 = base_value * 2;
                 let step2 = step1 + 10;
-                let step3 = step2 * step2;
-                step3
+                step2 * step2
             };
 
             assert_eq!(
@@ -1421,6 +1428,7 @@ mod tests {
             max_sessions: 2,
             session_timeout_secs: 3600,
             cleanup_interval_secs: 60,
+            max_concurrency: 8,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,
@@ -1450,6 +1458,7 @@ mod tests {
             max_sessions: 100,
             session_timeout_secs: 0,
             cleanup_interval_secs: 60,
+            max_concurrency: 8,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,
@@ -1482,6 +1491,7 @@ mod tests {
             max_sessions: 50,
             session_timeout_secs: 1800,
             cleanup_interval_secs: 30,
+            max_concurrency: 8,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,

@@ -73,7 +73,7 @@ fn extract_table_name_from_create(sql: &str) -> Option<String> {
         rest
     };
 
-    let end = rest.find(|c: char| c == ' ' || c == '(' || c == '\n')?;
+    let end = rest.find([' ', '(', '\n'])?;
     let name = rest[..end].to_string();
     Some(name.trim_matches('`').to_string())
 }
@@ -89,9 +89,7 @@ fn extract_table_name_from_drop(sql: &str) -> Option<String> {
         rest
     };
 
-    let end = rest
-        .find(|c: char| c == ' ' || c == ';' || c == '\n')
-        .unwrap_or(rest.len());
+    let end = rest.find([' ', ';', '\n']).unwrap_or(rest.len());
     let name = rest[..end].to_string();
     Some(name.trim_matches('`').to_string())
 }

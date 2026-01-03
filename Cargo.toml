@@ -56,6 +56,7 @@ path = "src/bin/client.rs"
 tempfile = "3"
 wiremock = "0.6.5"
 criterion = { version = "0.5", features = ["async_tokio"] }
+rand = "0.8"
 
 [[bench]]
 name = "sql_validation"
@@ -67,4 +68,8 @@ harness = false
 
 [[bench]]
 name = "converters"
+harness = false
+
+[[bench]]
+name = "parquet_loading"
 harness = false

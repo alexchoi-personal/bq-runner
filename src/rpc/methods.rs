@@ -38,7 +38,7 @@ use super::types::dag::{
     ClearDagParams, ClearDagResult, GetDagParams, GetDagResult, LoadDagFromDirectoryParams,
     LoadDagFromDirectoryResult, LoadParquetDirectoryParams, LoadParquetDirectoryResult,
     LoadSqlDirectoryParams, LoadSqlDirectoryResult, RegisterDagParams, RegisterDagResult,
-    RetryDagParams, RunDagParams, RunDagResult, TableErrorInfo,
+    RetryDagParams, RunDagParams, RunDagResult,
 };
 use super::types::query::ListTablesParams as QueryListTablesParams;
 use super::types::{
@@ -481,14 +481,7 @@ impl RpcMethods {
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
             succeeded_tables: result.succeeded,
-            failed_tables: result
-                .failed
-                .into_iter()
-                .map(|e| TableErrorInfo {
-                    table: e.table,
-                    error: e.error,
-                })
-                .collect(),
+            failed_tables: result.failed,
             skipped_tables: result.skipped,
         }))
     }
@@ -507,14 +500,7 @@ impl RpcMethods {
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
             succeeded_tables: result.succeeded,
-            failed_tables: result
-                .failed
-                .into_iter()
-                .map(|e| TableErrorInfo {
-                    table: e.table,
-                    error: e.error,
-                })
-                .collect(),
+            failed_tables: result.failed,
             skipped_tables: result.skipped,
         }))
     }

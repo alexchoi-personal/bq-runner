@@ -1,7 +1,7 @@
 use arrow::array::*;
 use arrow::datatypes::DataType as ArrowDataType;
 
-use super::base64_encode;
+use super::{base64_encode, escape_sql_string};
 
 macro_rules! downcast_or_null {
     ($array:expr, $array_type:ty) => {
@@ -69,11 +69,11 @@ pub(crate) fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -
         }
         ArrowDataType::Utf8 => {
             let arr = downcast_or_null!(array, StringArray);
-            format!("'{}'", arr.value(row).replace('\'', "''"))
+            format!("'{}'", escape_sql_string(arr.value(row)))
         }
         ArrowDataType::LargeUtf8 => {
             let arr = downcast_or_null!(array, LargeStringArray);
-            format!("'{}'", arr.value(row).replace('\'', "''"))
+            format!("'{}'", escape_sql_string(arr.value(row)))
         }
         ArrowDataType::Date32 => {
             let arr = downcast_or_null!(array, Date32Array);
