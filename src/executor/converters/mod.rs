@@ -10,7 +10,7 @@ pub(crate) use arrow::arrow_value_to_sql;
 pub(crate) use arrow::arrow_value_to_sql_into;
 pub use json::json_to_sql_value;
 pub(crate) use json::json_to_sql_value_into;
-pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_to_json};
+pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_into_json};
 
 #[cfg(test)]
 fn escape_sql_string(s: &str) -> Cow<'_, str> {

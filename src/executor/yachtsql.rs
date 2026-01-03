@@ -6,7 +6,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
 use yachtsql::{AsyncQueryExecutor, Table};
 
-use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_to_json};
+use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_into_json};
 use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
@@ -223,14 +223,10 @@ impl MockExecutorExt for YachtSqlExecutor {
         let tables: Vec<(String, u64)> = result
             .rows
             .into_iter()
-            .map(|row| {
-                let name = row
-                    .first()
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            .filter_map(|row| {
+                let name = row.first().and_then(|v| v.as_str())?;
                 let row_count = row.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
-                (name, row_count)
+                Some((name.to_string(), row_count))
             })
             .collect();
 
@@ -248,18 +244,10 @@ impl MockExecutorExt for YachtSqlExecutor {
         let schema: Vec<(String, String)> = schema_result
             .rows
             .into_iter()
-            .map(|row| {
-                let name = row
-                    .first()
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let col_type = row
-                    .get(1)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("STRING")
-                    .to_string();
-                (name, col_type)
+            .filter_map(|row| {
+                let name = row.first().and_then(|v| v.as_str())?;
+                let col_type = row.get(1).and_then(|v| v.as_str()).unwrap_or("STRING");
+                Some((name.to_string(), col_type.to_string()))
             })
             .collect();
 
@@ -353,8 +341,14 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
         .to_records()
         .map_err(|e| Error::Executor(e.to_string()))?;
     let rows: Vec<Vec<JsonValue>> = records
-        .iter()
-        .map(|record| record.values().iter().map(yacht_value_to_json).collect())
+        .into_iter()
+        .map(|record| {
+            record
+                .into_values()
+                .into_iter()
+                .map(yacht_value_into_json)
+                .collect()
+        })
         .collect();
 
     Ok(QueryResult { columns, rows })

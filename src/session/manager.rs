@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, Semaphore};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -574,11 +574,16 @@ impl SessionManager {
     ) -> Result<Vec<ParquetTableInfo>> {
         use futures::future::join_all;
 
+        const MAX_CONCURRENT_LOADS: usize = 16;
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_LOADS));
+
         let handles: Vec<_> = parquet_files
             .into_iter()
             .map(|pf| {
                 let executor = Arc::clone(&executor);
+                let semaphore = Arc::clone(&semaphore);
                 tokio::spawn(async move {
+                    let _permit = semaphore.acquire().await.expect("semaphore closed");
                     let row_count = executor
                         .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
                         .await?;

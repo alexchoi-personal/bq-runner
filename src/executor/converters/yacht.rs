@@ -23,32 +23,32 @@ pub fn datatype_to_bq_type(dt: &DataType) -> String {
     }
 }
 
-pub fn yacht_value_to_json(value: &YachtValue) -> JsonValue {
+pub fn yacht_value_into_json(value: YachtValue) -> JsonValue {
     match value {
         YachtValue::Null => JsonValue::Null,
-        YachtValue::Bool(b) => JsonValue::Bool(*b),
+        YachtValue::Bool(b) => JsonValue::Bool(b),
         YachtValue::Int64(i) => json!(i),
         YachtValue::Float64(f) => json!(f.into_inner()),
         YachtValue::Numeric(d) => JsonValue::String(d.to_string()),
-        YachtValue::String(s) => JsonValue::String(s.clone()),
-        YachtValue::Bytes(b) => JsonValue::String(base64_encode(b)),
+        YachtValue::String(s) => JsonValue::String(s),
+        YachtValue::Bytes(b) => JsonValue::String(base64_encode(&b)),
         YachtValue::Date(d) => JsonValue::String(d.to_string()),
         YachtValue::Time(t) => JsonValue::String(t.to_string()),
         YachtValue::DateTime(dt) => JsonValue::String(dt.to_string()),
         YachtValue::Timestamp(ts) => JsonValue::String(ts.to_string()),
-        YachtValue::Json(j) => j.clone(),
+        YachtValue::Json(j) => j,
         YachtValue::Array(arr) => {
-            let items: Vec<JsonValue> = arr.iter().map(yacht_value_to_json).collect();
+            let items: Vec<JsonValue> = arr.into_iter().map(yacht_value_into_json).collect();
             JsonValue::Array(items)
         }
         YachtValue::Struct(fields) => {
             let obj: serde_json::Map<String, JsonValue> = fields
-                .iter()
-                .map(|(k, v)| (k.clone(), yacht_value_to_json(v)))
+                .into_iter()
+                .map(|(k, v)| (k, yacht_value_into_json(v)))
                 .collect();
             JsonValue::Object(obj)
         }
-        YachtValue::Geography(g) => JsonValue::String(g.clone()),
+        YachtValue::Geography(g) => JsonValue::String(g),
         YachtValue::Interval(i) => JsonValue::String(format!("{:?}", i)),
         YachtValue::Range(r) => JsonValue::String(format!("{:?}", r)),
         YachtValue::BigNumeric(n) => JsonValue::String(n.to_string()),
@@ -107,27 +107,27 @@ mod tests {
     }
 
     #[test]
-    fn test_yacht_value_to_json_null() {
-        assert_eq!(yacht_value_to_json(&YachtValue::Null), JsonValue::Null);
+    fn test_yacht_value_into_json_null() {
+        assert_eq!(yacht_value_into_json(YachtValue::Null), JsonValue::Null);
     }
 
     #[test]
-    fn test_yacht_value_to_json_bool() {
+    fn test_yacht_value_into_json_bool() {
         assert_eq!(
-            yacht_value_to_json(&YachtValue::Bool(true)),
+            yacht_value_into_json(YachtValue::Bool(true)),
             JsonValue::Bool(true)
         );
     }
 
     #[test]
-    fn test_yacht_value_to_json_int64() {
-        assert_eq!(yacht_value_to_json(&YachtValue::Int64(42)), json!(42));
+    fn test_yacht_value_into_json_int64() {
+        assert_eq!(yacht_value_into_json(YachtValue::Int64(42)), json!(42));
     }
 
     #[test]
-    fn test_yacht_value_to_json_string() {
+    fn test_yacht_value_into_json_string() {
         assert_eq!(
-            yacht_value_to_json(&YachtValue::String("hello".to_string())),
+            yacht_value_into_json(YachtValue::String("hello".to_string())),
             JsonValue::String("hello".to_string())
         );
     }

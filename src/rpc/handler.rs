@@ -68,17 +68,21 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
     let id = request.id.clone().unwrap_or(Value::Null);
     let method_name = request.method.clone();
 
-    let request_id = uuid::Uuid::new_v4().to_string();
     let session_id = extract_session_id(&Some(request.params.clone()));
     let start = Instant::now();
     let audit_enabled = methods.audit_enabled();
+    let request_id = if audit_enabled {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
 
     record_rpc_request(&method_name);
 
-    if audit_enabled {
+    if let Some(ref req_id) = request_id {
         info!(
             target: "audit",
-            request_id = %request_id,
+            request_id = %req_id,
             method = %request.method,
             session_id = ?session_id,
             "request_received"
@@ -98,13 +102,13 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
     };
 
     record_rpc_duration(&method_name, start);
-    let duration_ms = start.elapsed().as_millis() as u64;
 
-    if audit_enabled {
+    if let Some(ref req_id) = request_id {
+        let duration_ms = start.elapsed().as_millis() as u64;
         match &result {
             Ok(_) => info!(
                 target: "audit",
-                request_id = %request_id,
+                request_id = %req_id,
                 method = %method_name,
                 session_id = ?session_id,
                 duration_ms = duration_ms,
@@ -113,7 +117,7 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
             ),
             Err(e) => warn!(
                 target: "audit",
-                request_id = %request_id,
+                request_id = %req_id,
                 method = %method_name,
                 session_id = ?session_id,
                 duration_ms = duration_ms,
