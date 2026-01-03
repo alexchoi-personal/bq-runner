@@ -36,6 +36,10 @@ fn escape_sql_string(s: &str) -> Cow<'_, str> {
 }
 
 fn escape_sql_string_into(s: &str, buf: &mut String) {
+    if !s.bytes().any(|b| b == b'\'' || b == b'\\' || b == 0) {
+        buf.push_str(s);
+        return;
+    }
     for c in s.chars() {
         match c {
             '\'' => buf.push_str("''"),
