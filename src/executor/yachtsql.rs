@@ -1,14 +1,19 @@
-use std::fs::File;
+use std::path::{Path, PathBuf};
 
+use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
+use tokio::sync::mpsc;
 use yachtsql::{AsyncQueryExecutor, Table};
 
-use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_json};
+use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_into_json};
 use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+use crate::validation::{open_file_secure, quote_identifier};
+
+const PARQUET_CHANNEL_BUFFER: usize = 4;
 
 pub(crate) trait MockExecutorExt {
     fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
@@ -61,24 +66,22 @@ impl YachtSqlExecutor {
         path: &str,
         schema: &[ColumnDef],
     ) -> Result<u64> {
-        let file = File::open(path)
-            .map_err(|e| Error::Executor(format!("Failed to open parquet file: {}", e)))?;
+        let path_buf = PathBuf::from(path);
+        let (tx, mut rx) = mpsc::channel::<Result<RecordBatch>>(PARQUET_CHANNEL_BUFFER);
 
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| Error::Executor(format!("Failed to read parquet: {}", e)))?;
+        tokio::task::spawn_blocking(move || {
+            stream_parquet_batches(&path_buf, tx);
+        });
 
-        let reader = builder
-            .build()
-            .map_err(|e| Error::Executor(format!("Failed to build parquet reader: {}", e)))?;
-
+        let quoted_table = format!("`{}`", quote_identifier(table_name));
         let columns: Vec<String> = schema
             .iter()
-            .map(|col| format!("{} {}", col.name, col.column_type))
+            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
             .collect();
 
         let create_sql = format!(
             "CREATE OR REPLACE TABLE {} ({})",
-            table_name,
+            quoted_table,
             columns.join(", ")
         );
 
@@ -88,47 +91,118 @@ impl YachtSqlExecutor {
             .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, create_sql)))?;
 
         let mut total_rows = 0u64;
+        const INSERT_BATCH_SIZE: usize = 1000;
 
-        for batch_result in reader {
-            let batch = batch_result
-                .map_err(|e| Error::Executor(format!("Failed to read batch: {}", e)))?;
+        while let Some(batch_result) = rx.recv().await {
+            let batch = batch_result?;
 
             if batch.num_rows() == 0 {
                 continue;
             }
 
-            let mut all_values: Vec<Vec<String>> = Vec::new();
-            for row_idx in 0..batch.num_rows() {
-                let mut row_values = Vec::new();
-                for (col_idx, col_schema) in schema.iter().enumerate().take(batch.num_columns()) {
-                    let col = batch.column(col_idx);
-                    let bq_type = col_schema.column_type.as_str();
-                    let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_type);
-                    row_values.push(value);
-                }
-                all_values.push(row_values);
-            }
-
-            let values_str: Vec<String> = all_values
+            let num_cols = schema.len().min(batch.num_columns());
+            let columns: Vec<_> = (0..num_cols).map(|i| batch.column(i)).collect();
+            let bq_types: Vec<_> = schema
                 .iter()
-                .map(|row| format!("({})", row.join(", ")))
+                .take(num_cols)
+                .map(|c| c.column_type.as_str())
                 .collect();
 
-            let insert_sql = format!(
-                "INSERT INTO {} VALUES {}",
-                table_name,
-                values_str.join(", ")
-            );
+            let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * num_cols * 16);
+            let mut rows_in_batch = 0;
 
-            self.executor
-                .execute_sql(&insert_sql)
-                .await
-                .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+            for row_idx in 0..batch.num_rows() {
+                if rows_in_batch > 0 {
+                    batch_buffer.push_str(", ");
+                }
+                batch_buffer.push('(');
+                for (col_idx, col) in columns.iter().enumerate() {
+                    if col_idx > 0 {
+                        batch_buffer.push_str(", ");
+                    }
+                    arrow_value_to_sql_into(
+                        col.as_ref(),
+                        row_idx,
+                        bq_types[col_idx],
+                        &mut batch_buffer,
+                    );
+                }
+                batch_buffer.push(')');
+                rows_in_batch += 1;
+
+                if rows_in_batch >= INSERT_BATCH_SIZE {
+                    let insert_sql =
+                        format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
+                    self.executor
+                        .execute_sql(&insert_sql)
+                        .await
+                        .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+                    batch_buffer.clear();
+                    rows_in_batch = 0;
+                }
+            }
+
+            if rows_in_batch > 0 {
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
+                self.executor
+                    .execute_sql(&insert_sql)
+                    .await
+                    .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, insert_sql)))?;
+            }
 
             total_rows += batch.num_rows() as u64;
         }
 
         Ok(total_rows)
+    }
+}
+
+fn stream_parquet_batches(path: &Path, tx: mpsc::Sender<Result<RecordBatch>>) {
+    let file = match open_file_secure(path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to open parquet file: {}",
+                e
+            ))));
+            return;
+        }
+    };
+
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to read parquet: {}",
+                e
+            ))));
+            return;
+        }
+    };
+
+    let reader = match builder.build() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(Error::Executor(format!(
+                "Failed to build parquet reader: {}",
+                e
+            ))));
+            return;
+        }
+    };
+
+    for batch_result in reader {
+        let batch = match batch_result {
+            Ok(b) => b,
+            Err(e) => {
+                let _ =
+                    tx.blocking_send(Err(Error::Executor(format!("Failed to read batch: {}", e))));
+                return;
+            }
+        };
+        if tx.blocking_send(Ok(batch)).is_err() {
+            return;
+        }
     }
 }
 
@@ -183,10 +257,10 @@ impl MockExecutorExt for YachtSqlExecutor {
         let tables: Vec<(String, u64)> = result
             .rows
             .into_iter()
-            .map(|row| {
-                let name = row[0].as_str().unwrap_or("").to_string();
-                let row_count = row[1].as_u64().unwrap_or(0);
-                (name, row_count)
+            .filter_map(|row| {
+                let name = row.first().and_then(|v| v.as_str())?;
+                let row_count = row.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+                Some((name.to_string(), row_count))
             })
             .collect();
 
@@ -194,23 +268,25 @@ impl MockExecutorExt for YachtSqlExecutor {
     }
 
     async fn describe_table(&self, table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
+        let escaped_name = table_name.replace('\'', "''");
         let schema_sql = format!(
             "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
-            table_name
+            escaped_name
         );
         let schema_result = self.execute_query(&schema_sql).await?;
 
         let schema: Vec<(String, String)> = schema_result
             .rows
             .into_iter()
-            .map(|row| {
-                let name = row[0].as_str().unwrap_or("").to_string();
-                let col_type = row[1].as_str().unwrap_or("STRING").to_string();
-                (name, col_type)
+            .filter_map(|row| {
+                let name = row.first().and_then(|v| v.as_str())?;
+                let col_type = row.get(1).and_then(|v| v.as_str()).unwrap_or("STRING");
+                Some((name.to_string(), col_type.to_string()))
             })
             .collect();
 
-        let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
+        let quoted_name = format!("`{}`", quote_identifier(table_name));
+        let count_sql = format!("SELECT COUNT(*) FROM {}", quoted_name);
         let count_result = self.execute_query(&count_sql).await?;
         let row_count = count_result
             .rows
@@ -291,7 +367,7 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
         .iter()
         .map(|f| ColumnInfo {
             name: f.name.clone(),
-            data_type: datatype_to_bq_type(&f.data_type),
+            data_type: datatype_to_bq_type(&f.data_type).into_owned(),
         })
         .collect();
 
@@ -299,8 +375,14 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
         .to_records()
         .map_err(|e| Error::Executor(e.to_string()))?;
     let rows: Vec<Vec<JsonValue>> = records
-        .iter()
-        .map(|record| record.values().iter().map(yacht_value_to_json).collect())
+        .into_iter()
+        .map(|record| {
+            record
+                .into_values()
+                .into_iter()
+                .map(yacht_value_into_json)
+                .collect()
+        })
         .collect();
 
     Ok(QueryResult { columns, rows })
@@ -308,16 +390,14 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::converters::{
-        arrow_value_to_sql, base64_encode, datatype_to_bq_type, yacht_value_to_json,
-    };
+    use super::super::converters::{arrow_value_to_sql, base64_encode, datatype_to_bq_type};
     use super::*;
     use arrow::array::*;
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit};
     use parquet::arrow::ArrowWriter;
     use serde_json::json;
     use std::sync::Arc;
-    use yachtsql::{DataType, Value as YachtValue};
+    use yachtsql::DataType;
 
     #[tokio::test]
     async fn test_yachtsql_executor_new() {
@@ -913,9 +993,16 @@ mod tests {
     }
 
     #[test]
-    fn test_arrow_value_to_sql_unsupported_type() {
+    fn test_arrow_value_to_sql_binary_type() {
         let arr = arrow::array::BinaryArray::from(vec![Some(b"hello".as_slice())]);
         let result = arrow_value_to_sql(&arr, 0, "BYTES");
+        assert_eq!(result, "FROM_BASE64('aGVsbG8=')");
+    }
+
+    #[test]
+    fn test_arrow_value_to_sql_unsupported_type() {
+        let arr = arrow::array::DurationSecondArray::from(vec![Some(100i64)]);
+        let result = arrow_value_to_sql(&arr, 0, "INTERVAL");
         assert_eq!(result, "NULL");
     }
 

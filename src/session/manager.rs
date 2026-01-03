@@ -1,42 +1,218 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
+use tokio::sync::{OnceCell, Semaphore};
+use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::config::{SecurityConfig, SessionConfig};
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{
     BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
 };
 use crate::loader;
+use crate::metrics::{
+    record_dag_execution, record_query_executed, record_session_created, record_session_destroyed,
+    record_tables_defined, set_active_sessions,
+};
+use crate::validation::{
+    quote_identifier, validate_path, validate_sql_for_define_table, validate_table_name,
+};
 
 use super::pipeline::{Pipeline, PipelineResult, TableError};
 
 pub struct SessionManager {
     sessions: RwLock<HashMap<Uuid, Session>>,
     mode: ExecutorMode,
+    start_time: Instant,
+    security_config: SecurityConfig,
+    session_config: SessionConfig,
+    health_executor: OnceCell<Arc<dyn ExecutorBackend>>,
+}
+
+#[derive(Default)]
+pub struct SessionManagerBuilder {
+    mode: Option<ExecutorMode>,
+    security_config: Option<SecurityConfig>,
+    session_config: Option<SessionConfig>,
+}
+
+impl SessionManagerBuilder {
+    pub fn mode(mut self, mode: ExecutorMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    pub fn security_config(mut self, config: SecurityConfig) -> Self {
+        self.security_config = Some(config);
+        self
+    }
+
+    pub fn session_config(mut self, config: SessionConfig) -> Self {
+        self.session_config = Some(config);
+        self
+    }
+
+    pub fn build(self) -> SessionManager {
+        SessionManager {
+            sessions: RwLock::new(HashMap::new()),
+            mode: self.mode.unwrap_or(ExecutorMode::Mock),
+            start_time: Instant::now(),
+            security_config: self.security_config.unwrap_or_default(),
+            session_config: self.session_config.unwrap_or_default(),
+            health_executor: OnceCell::new(),
+        }
+    }
 }
 
 struct Session {
     executor: Arc<dyn ExecutorBackend>,
     mock_executor: Option<Arc<YachtSqlExecutor>>,
     pipeline: Pipeline,
+    last_accessed_nanos: AtomicU64,
+    created_at: Instant,
+}
+
+impl Session {
+    fn new(
+        executor: Arc<dyn ExecutorBackend>,
+        mock_executor: Option<Arc<YachtSqlExecutor>>,
+        max_concurrency: usize,
+    ) -> Self {
+        Self {
+            executor,
+            mock_executor,
+            pipeline: Pipeline::with_max_concurrency(max_concurrency),
+            last_accessed_nanos: AtomicU64::new(0),
+            created_at: Instant::now(),
+        }
+    }
+
+    fn touch(&self) {
+        let nanos = self.created_at.elapsed().as_nanos() as u64;
+        self.last_accessed_nanos.store(nanos, Ordering::Relaxed);
+    }
+
+    fn last_accessed(&self) -> Instant {
+        let nanos = self.last_accessed_nanos.load(Ordering::Relaxed);
+        self.created_at + Duration::from_nanos(nanos)
+    }
 }
 
 impl SessionManager {
     pub fn new() -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode: ExecutorMode::Mock,
-        }
+        Self::builder().build()
     }
 
-    pub fn with_mode(mode: ExecutorMode) -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            mode,
+    pub fn builder() -> SessionManagerBuilder {
+        SessionManagerBuilder::default()
+    }
+
+    pub fn with_security_config(security_config: SecurityConfig) -> Self {
+        Self::builder().security_config(security_config).build()
+    }
+
+    pub fn with_full_config(
+        mode: ExecutorMode,
+        security_config: SecurityConfig,
+        session_config: SessionConfig,
+    ) -> Self {
+        Self::builder()
+            .mode(mode)
+            .security_config(security_config)
+            .session_config(session_config)
+            .build()
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.sessions.read().len()
+    }
+
+    pub fn uptime_seconds(&self) -> u64 {
+        self.start_time.elapsed().as_secs()
+    }
+
+    pub async fn check_executor_health(&self) -> Result<()> {
+        let executor = self
+            .health_executor
+            .get_or_try_init(|| async {
+                let executor: Arc<dyn ExecutorBackend> = match self.mode {
+                    ExecutorMode::Mock => Arc::new(YachtSqlExecutor::new()),
+                    ExecutorMode::BigQuery => Arc::new(BigQueryExecutor::new().await?),
+                };
+                Ok::<_, Error>(executor)
+            })
+            .await?;
+        executor.execute_query("SELECT 1").await.map(|_| ())
+    }
+
+    pub fn security_config(&self) -> &SecurityConfig {
+        &self.security_config
+    }
+
+    pub fn session_config(&self) -> &SessionConfig {
+        &self.session_config
+    }
+
+    pub fn cleanup_expired_sessions(&self) -> usize {
+        let timeout = Duration::from_secs(self.session_config.session_timeout_secs);
+        let now = Instant::now();
+
+        let expired_ids: Vec<Uuid> = {
+            let sessions = self.sessions.read();
+            sessions
+                .iter()
+                .filter_map(|(id, session)| {
+                    if now.duration_since(session.last_accessed()) > timeout {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        if expired_ids.is_empty() {
+            return 0;
         }
+
+        let ids_to_remove: Vec<Uuid> = {
+            let sessions = self.sessions.read();
+            expired_ids
+                .into_iter()
+                .filter(|id| {
+                    sessions
+                        .get(id)
+                        .is_some_and(|s| now.duration_since(s.last_accessed()) > timeout)
+                })
+                .collect()
+        };
+
+        if ids_to_remove.is_empty() {
+            return 0;
+        }
+
+        let mut sessions = self.sessions.write();
+        let mut removed = 0;
+        for id in ids_to_remove {
+            if sessions.remove(&id).is_some() {
+                debug!(session_id = %id, "Session expired and removed");
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            info!(
+                removed = removed,
+                remaining = sessions.len(),
+                "Cleaned up expired sessions"
+            );
+        }
+        removed
     }
 
     fn get_executor(&self, session_id: Uuid) -> Result<Arc<dyn ExecutorBackend>> {
@@ -44,6 +220,7 @@ impl SessionManager {
         let session = sessions
             .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
+        session.touch();
         Ok(Arc::clone(&session.executor))
     }
 
@@ -52,6 +229,7 @@ impl SessionManager {
         let session = sessions
             .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
+        session.touch();
         session
             .mock_executor
             .clone()
@@ -66,6 +244,7 @@ impl SessionManager {
         let session = sessions
             .get(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
+        session.touch();
         f(session)
     }
 
@@ -77,10 +256,21 @@ impl SessionManager {
         let session = sessions
             .get_mut(&session_id)
             .ok_or(Error::SessionNotFound(session_id))?;
+        session.touch();
         f(session)
     }
 
     pub async fn create_session(&self) -> Result<Uuid> {
+        {
+            let sessions = self.sessions.read();
+            if sessions.len() >= self.session_config.max_sessions {
+                return Err(Error::InvalidRequest(format!(
+                    "Maximum session limit ({}) reached",
+                    self.session_config.max_sessions
+                )));
+            }
+        }
+
         let session_id = Uuid::new_v4();
         let (executor, mock_executor): (Arc<dyn ExecutorBackend>, Option<Arc<YachtSqlExecutor>>) =
             match self.mode {
@@ -90,31 +280,49 @@ impl SessionManager {
                 }
                 ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
             };
-        let pipeline = Pipeline::new();
 
-        let session = Session {
-            executor,
-            mock_executor,
-            pipeline,
+        let session = Session::new(executor, mock_executor, self.session_config.max_concurrency);
+
+        let session_count = {
+            let mut sessions = self.sessions.write();
+            if sessions.len() >= self.session_config.max_sessions {
+                return Err(Error::InvalidRequest(format!(
+                    "Maximum session limit ({}) reached",
+                    self.session_config.max_sessions
+                )));
+            }
+            sessions.insert(session_id, session);
+            sessions.len()
         };
 
-        self.sessions.write().insert(session_id, session);
+        record_session_created();
+        set_active_sessions(session_count);
 
         Ok(session_id)
     }
 
     pub fn destroy_session(&self, session_id: Uuid) -> Result<()> {
-        self.sessions
-            .write()
-            .remove(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
+        let session_count = {
+            let mut sessions = self.sessions.write();
+            sessions
+                .remove(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            sessions.len()
+        };
+
+        record_session_destroyed();
+        set_active_sessions(session_count);
 
         Ok(())
     }
 
     pub async fn execute_query(&self, session_id: Uuid, sql: &str) -> Result<QueryResult> {
         let executor = self.get_executor(session_id)?;
-        executor.execute_query(sql).await
+        let result = executor.execute_query(sql).await;
+        if result.is_ok() {
+            record_query_executed();
+        }
+        result
     }
 
     pub async fn execute_statement(&self, session_id: Uuid, sql: &str) -> Result<u64> {
@@ -127,6 +335,12 @@ impl SessionManager {
         session_id: Uuid,
         tables: Vec<DagTableDef>,
     ) -> Result<Vec<DagTableInfo>> {
+        for table in &tables {
+            validate_table_name(&table.name)?;
+            if let Some(sql) = &table.sql {
+                validate_sql_for_define_table(sql)?;
+            }
+        }
         self.with_session_mut(session_id, |session| session.pipeline.register(tables))
     }
 
@@ -160,6 +374,7 @@ impl SessionManager {
             result.skipped = retry_result.skipped;
         }
 
+        record_dag_execution(result.succeeded.len(), result.failed.len());
         Ok(result)
     }
 
@@ -207,8 +422,55 @@ impl SessionManager {
                 std::mem::take(&mut session.pipeline),
             )
         };
-        pipeline.clear(executor.as_ref()).await;
-        Ok(())
+        pipeline.clear(executor.as_ref()).await
+    }
+
+    pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
+        validate_table_name(name)?;
+        validate_sql_for_define_table(sql)?;
+        let result = self.with_session_mut(session_id, |session| {
+            session.pipeline.register_table(name, sql)
+        });
+        if result.is_ok() {
+            record_tables_defined(1);
+        }
+        result
+    }
+
+    pub async fn drop_table(&self, session_id: Uuid, name: &str) -> Result<()> {
+        validate_table_name(name)?;
+        let executor = self.get_executor(session_id)?;
+
+        let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(name));
+        executor.execute_statement(&drop_sql).await?;
+
+        self.with_session_mut(session_id, |session| {
+            session.pipeline.remove_table(name);
+            Ok(())
+        })
+    }
+
+    pub async fn drop_all_tables(&self, session_id: Uuid) -> Result<()> {
+        let (executor, table_names) = {
+            let sessions = self.sessions.read();
+            let session = sessions
+                .get(&session_id)
+                .ok_or(Error::SessionNotFound(session_id))?;
+            let table_names = session.pipeline.table_names();
+            (Arc::clone(&session.executor), table_names)
+        };
+
+        for name in &table_names {
+            let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(name));
+            if let Err(e) = executor.execute_statement(&drop_sql).await {
+                tracing::debug!(table = %name, error = %e, "Failed to drop table during clear_dag");
+            }
+        }
+
+        self.with_session_mut(session_id, |session| {
+            session.pipeline.clear_state();
+            Ok(())
+        })
     }
 
     pub async fn load_parquet(
@@ -218,8 +480,15 @@ impl SessionManager {
         path: &str,
         schema: &[crate::domain::ColumnDef],
     ) -> Result<u64> {
+        let validated_path = validate_path(path, &self.security_config)?;
         let executor = self.get_executor(session_id)?;
-        executor.load_parquet(table_name, path, schema).await
+        executor
+            .load_parquet(
+                table_name,
+                validated_path.to_string_lossy().as_ref(),
+                schema,
+            )
+            .await
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
@@ -272,7 +541,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<DagTableInfo>, Vec<SqlTableInfo>)> {
-        let sql_files = loader::discover_sql_files(root_path)?;
+        let sql_files = loader::discover_sql_files_secure(root_path, &self.security_config)?;
 
         let tables: Vec<DagTableDef> = sql_files
             .iter()
@@ -304,7 +573,8 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let parquet_files = loader::discover_parquet_files(root_path)?;
+        let parquet_files =
+            loader::discover_parquet_files_secure(root_path, &self.security_config)?;
         let executor = self.get_executor(session_id)?;
         self.load_parquet_files_parallel(executor, parquet_files)
             .await
@@ -315,31 +585,54 @@ impl SessionManager {
         executor: Arc<dyn ExecutorBackend>,
         parquet_files: Vec<loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let mut handles = Vec::new();
+        use futures::future::join_all;
 
-        for pf in parquet_files {
-            let executor = Arc::clone(&executor);
-            let handle = tokio::spawn(async move {
-                let row_count = executor
-                    .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
-                    .await?;
-                Ok::<_, Error>(ParquetTableInfo {
-                    project: pf.project,
-                    dataset: pf.dataset,
-                    table: pf.table,
-                    path: pf.path,
-                    row_count,
+        const MAX_CONCURRENT_LOADS: usize = 16;
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_LOADS));
+
+        let handles: Vec<_> = parquet_files
+            .into_iter()
+            .map(|pf| {
+                let executor = Arc::clone(&executor);
+                let semaphore = Arc::clone(&semaphore);
+                tokio::spawn(async move {
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .map_err(|_| Error::Internal("Semaphore unexpectedly closed".into()))?;
+                    let row_count = executor
+                        .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
+                        .await?;
+                    Ok::<_, Error>(ParquetTableInfo {
+                        project: pf.project,
+                        dataset: pf.dataset,
+                        table: pf.table,
+                        path: pf.path,
+                        row_count,
+                    })
                 })
-            });
-            handles.push(handle);
+            })
+            .collect();
+
+        let joined = join_all(handles).await;
+
+        let mut results = Vec::with_capacity(joined.len());
+        let mut errors = Vec::new();
+
+        for join_result in joined {
+            match join_result {
+                Ok(Ok(info)) => results.push(info),
+                Ok(Err(e)) => errors.push(e.to_string()),
+                Err(e) => errors.push(format!("Task join error: {}", e)),
+            }
         }
 
-        let mut results = Vec::new();
-        for handle in handles {
-            let result = handle
-                .await
-                .map_err(|e| Error::Executor(format!("Task join error: {}", e)))??;
-            results.push(result);
+        if !errors.is_empty() {
+            return Err(Error::Executor(format!(
+                "Failed to load {} parquet file(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
         }
 
         Ok(results)
@@ -350,7 +643,7 @@ impl SessionManager {
         session_id: Uuid,
         root_path: &str,
     ) -> Result<(Vec<ParquetTableInfo>, Vec<SqlTableInfo>, Vec<DagTableInfo>)> {
-        let discovered = loader::discover_files(root_path)?;
+        let discovered = loader::discover_files_secure(root_path, &self.security_config)?;
         let executor = self.get_executor(session_id)?;
         let parquet_results = self
             .load_parquet_files_parallel(executor, discovered.parquet_files)
@@ -551,7 +844,11 @@ mod tests {
             writer.close().unwrap();
         }
 
-        let manager = SessionManager::new();
+        let security_config = SecurityConfig {
+            allowed_paths: vec![temp_file.path().parent().unwrap().to_path_buf()],
+            block_symlinks: false,
+        };
+        let manager = SessionManager::with_security_config(security_config);
         let session_id = manager.create_session().await.unwrap();
 
         let bq_schema = vec![
@@ -602,7 +899,7 @@ mod tests {
         assert_eq!(query_result.rows[0][0].as_i64().unwrap(), 1);
         assert_eq!(query_result.rows[0][1].as_str().unwrap(), "Alice");
         assert_eq!(query_result.rows[0][2].as_f64().unwrap(), 95.5);
-        assert_eq!(query_result.rows[0][3].as_bool().unwrap(), true);
+        assert!(query_result.rows[0][3].as_bool().unwrap());
 
         assert_eq!(query_result.rows[1][0].as_i64().unwrap(), 2);
         assert_eq!(query_result.rows[1][1].as_str().unwrap(), "Bob");
@@ -904,8 +1201,7 @@ mod tests {
             let expected = {
                 let step1 = base_value * 2;
                 let step2 = step1 + 10;
-                let step3 = step2 * step2;
-                step3
+                step2 * step2
             };
 
             assert_eq!(
@@ -1158,5 +1454,107 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_define_table_validates_sql() {
+        let manager = SessionManager::new();
+        let session_id = manager.create_session().await.unwrap();
+
+        let result = manager.define_table(session_id, "valid_table", "SELECT 1 AS id");
+        assert!(result.is_ok());
+
+        let result = manager.define_table(session_id, "bad_table", "DROP TABLE users");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_manager_with_security_config() {
+        let config = SecurityConfig {
+            allowed_paths: vec![std::path::PathBuf::from("/tmp")],
+            block_symlinks: false,
+        };
+        let manager = SessionManager::with_security_config(config);
+        assert!(!manager.security_config().block_symlinks);
+    }
+
+    #[tokio::test]
+    async fn test_max_sessions_limit() {
+        let session_config = SessionConfig {
+            max_sessions: 2,
+            session_timeout_secs: 3600,
+            cleanup_interval_secs: 60,
+            max_concurrency: 8,
+        };
+        let manager = SessionManager::with_full_config(
+            ExecutorMode::Mock,
+            SecurityConfig::default(),
+            session_config,
+        );
+
+        let s1 = manager.create_session().await;
+        assert!(s1.is_ok());
+        let s2 = manager.create_session().await;
+        assert!(s2.is_ok());
+        let s3 = manager.create_session().await;
+        assert!(s3.is_err());
+        assert!(s3
+            .unwrap_err()
+            .to_string()
+            .contains("Maximum session limit"));
+
+        manager.destroy_session(s1.unwrap()).unwrap();
+        let s4 = manager.create_session().await;
+        assert!(s4.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_session_cleanup_expired() {
+        let session_config = SessionConfig {
+            max_sessions: 100,
+            session_timeout_secs: 0,
+            cleanup_interval_secs: 60,
+            max_concurrency: 8,
+        };
+        let manager = SessionManager::with_full_config(
+            ExecutorMode::Mock,
+            SecurityConfig::default(),
+            session_config,
+        );
+
+        let _s1 = manager.create_session().await.unwrap();
+        let _s2 = manager.create_session().await.unwrap();
+        assert_eq!(manager.session_count(), 2);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let removed = manager.cleanup_expired_sessions();
+        assert_eq!(removed, 2);
+        assert_eq!(manager.session_count(), 0);
+    }
+
+    #[test]
+    fn test_uptime_seconds() {
+        let manager = SessionManager::new();
+        let uptime1 = manager.uptime_seconds();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let uptime2 = manager.uptime_seconds();
+        assert!(uptime2 >= uptime1);
+    }
+
+    #[test]
+    fn test_session_config_accessor() {
+        let session_config = SessionConfig {
+            max_sessions: 50,
+            session_timeout_secs: 1800,
+            cleanup_interval_secs: 30,
+            max_concurrency: 8,
+        };
+        let manager = SessionManager::with_full_config(
+            ExecutorMode::Mock,
+            SecurityConfig::default(),
+            session_config,
+        );
+        assert_eq!(manager.session_config().max_sessions, 50);
+        assert_eq!(manager.session_config().session_timeout_secs, 1800);
     }
 }

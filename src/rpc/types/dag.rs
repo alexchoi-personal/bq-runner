@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::domain::{
-    DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo,
+    DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo, TableError,
 };
 
 #[derive(Debug, Deserialize)]
@@ -33,15 +33,9 @@ pub struct RunDagResult {
     #[serde(rename = "succeededTables")]
     pub succeeded_tables: Vec<String>,
     #[serde(rename = "failedTables")]
-    pub failed_tables: Vec<TableErrorInfo>,
+    pub failed_tables: Vec<TableError>,
     #[serde(rename = "skippedTables")]
     pub skipped_tables: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TableErrorInfo {
-    pub table: String,
-    pub error: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,7 +198,7 @@ mod tests {
         let result = RunDagResult {
             success: false,
             succeeded_tables: vec!["t1".to_string()],
-            failed_tables: vec![TableErrorInfo {
+            failed_tables: vec![TableError {
                 table: "t2".to_string(),
                 error: "error msg".to_string(),
             }],
@@ -357,8 +351,8 @@ mod tests {
     }
 
     #[test]
-    fn test_table_error_info_serialization() {
-        let info = TableErrorInfo {
+    fn test_table_error_serialization() {
+        let info = TableError {
             table: "failed_table".to_string(),
             error: "SQL error".to_string(),
         };

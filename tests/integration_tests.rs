@@ -1,14 +1,25 @@
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
 use tempfile::TempDir;
 
+use bq_runner::config::SecurityConfig;
 use bq_runner::rpc::RpcMethods;
 use bq_runner::session::SessionManager;
 
 fn create_rpc_methods() -> RpcMethods {
     let session_manager = Arc::new(SessionManager::new());
+    RpcMethods::new(session_manager)
+}
+
+fn create_rpc_methods_with_paths(allowed_paths: Vec<PathBuf>) -> RpcMethods {
+    let security_config = SecurityConfig {
+        allowed_paths,
+        block_symlinks: false,
+    };
+    let session_manager = Arc::new(SessionManager::with_security_config(security_config));
     RpcMethods::new(session_manager)
 }
 
@@ -210,10 +221,10 @@ async fn test_get_dag() {
 
 #[tokio::test]
 async fn test_load_sql_directory() {
-    let methods = create_rpc_methods();
+    let temp_dir = TempDir::new().unwrap();
+    let methods = create_rpc_methods_with_paths(vec![temp_dir.path().to_path_buf()]);
     let session_id = create_session(&methods).await;
 
-    let temp_dir = TempDir::new().unwrap();
     let project_path = temp_dir.path().join("my_project");
     let dataset_path = project_path.join("my_dataset");
     fs::create_dir_all(&dataset_path).unwrap();
@@ -248,10 +259,10 @@ async fn test_load_parquet_directory() {
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
 
-    let methods = create_rpc_methods();
+    let temp_dir = TempDir::new().unwrap();
+    let methods = create_rpc_methods_with_paths(vec![temp_dir.path().to_path_buf()]);
     let session_id = create_session(&methods).await;
 
-    let temp_dir = TempDir::new().unwrap();
     let project_path = temp_dir.path().join("proj");
     let dataset_path = project_path.join("ds");
     fs::create_dir_all(&dataset_path).unwrap();
@@ -303,10 +314,10 @@ async fn test_load_dag_from_directory() {
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
 
-    let methods = create_rpc_methods();
+    let temp_dir = TempDir::new().unwrap();
+    let methods = create_rpc_methods_with_paths(vec![temp_dir.path().to_path_buf()]);
     let session_id = create_session(&methods).await;
 
-    let temp_dir = TempDir::new().unwrap();
     let project_path = temp_dir.path().join("analytics");
     let dataset_path = project_path.join("reports");
     fs::create_dir_all(&dataset_path).unwrap();

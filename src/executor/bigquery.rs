@@ -209,8 +209,8 @@ impl BigQueryExecutor {
             if status.status.state == JobState::Done {
                 if let Some(err) = &status.status.error_result {
                     return Err(Error::Executor(format!(
-                        "Load job failed: {:?}",
-                        err.message
+                        "Load job failed: {}",
+                        err.message.as_deref().unwrap_or("Unknown error")
                     )));
                 }
 
@@ -224,10 +224,13 @@ impl BigQueryExecutor {
                 let rows = status
                     .statistics
                     .and_then(|s| s.load)
-                    .and_then(|l| l.output_rows)
-                    .unwrap_or(0) as u64;
+                    .and_then(|l| l.output_rows);
 
-                return Ok(rows);
+                if rows.is_none() {
+                    tracing::warn!(job_id = %job_id, "BigQuery job completed but statistics are missing, defaulting to 0 rows");
+                }
+
+                return Ok(rows.unwrap_or(0) as u64);
             }
 
             tokio::time::sleep(interval).await;
@@ -248,9 +251,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery query failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery query failed: {}", e)))?;
 
         let columns: Vec<ColumnInfo> = response
             .schema
@@ -295,9 +296,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery statement failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery statement failed: {}", e)))?;
 
         Ok(response.num_dml_affected_rows.unwrap_or(0) as u64)
     }
@@ -362,7 +361,10 @@ fn string_to_bq_type(type_str: &str) -> TableFieldType {
         "INTERVAL" => TableFieldType::Interval,
         "JSON" => TableFieldType::Json,
         "STRUCT" | "RECORD" => TableFieldType::Struct,
-        _ => TableFieldType::String,
+        other => {
+            tracing::warn!(type_str = %other, "Unknown BigQuery type, defaulting to STRING");
+            TableFieldType::String
+        }
     }
 }
 

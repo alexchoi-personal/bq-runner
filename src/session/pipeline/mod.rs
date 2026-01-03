@@ -11,8 +11,11 @@ use tokio::sync::mpsc;
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{ExecutorBackend, ExecutorMode};
+use crate::validation::quote_identifier;
 
-pub use types::{PipelineResult, PipelineTable, TableError};
+pub use crate::domain::{TableError, TableStatus};
+pub use types::PipelineResult;
+pub(crate) use types::PipelineTable;
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
@@ -20,53 +23,126 @@ use execution::execute_table;
 
 #[derive(Clone)]
 pub struct Pipeline {
-    tables: HashMap<String, PipelineTable>,
+    tables: HashMap<String, Arc<PipelineTable>>,
+    table_status: HashMap<String, TableStatus>,
+    table_name_lookup: HashMap<String, String>,
+    max_concurrency: usize,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
+        Self::with_max_concurrency(DEFAULT_MAX_CONCURRENCY)
+    }
+
+    pub fn with_max_concurrency(max_concurrency: usize) -> Self {
         Self {
             tables: HashMap::new(),
+            table_status: HashMap::new(),
+            table_name_lookup: HashMap::new(),
+            max_concurrency,
         }
     }
 
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
-        let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+        let count = defs.len();
+        self.tables.reserve(count);
+        self.table_status.reserve(count);
+        self.table_name_lookup.reserve(count);
+
+        let mut temp_tables: HashMap<String, PipelineTable> = HashMap::with_capacity(count);
+        let mut new_names: Vec<String> = Vec::with_capacity(count);
 
         for def in defs {
             let is_source = def.sql.is_none();
+            let name = def.name;
+            new_names.push(name.clone());
             let table = PipelineTable {
-                name: def.name.clone(),
+                name: name.clone(),
                 sql: def.sql,
                 schema: def.schema,
                 rows: def.rows,
                 dependencies: vec![],
                 is_source,
             };
-            self.tables.insert(table.name.clone(), table);
+            self.table_name_lookup
+                .insert(name.to_uppercase(), name.clone());
+            self.table_status.insert(name.clone(), TableStatus::Pending);
+            temp_tables.insert(name, table);
         }
 
         for name in &new_names {
-            if let Some(table) = self.tables.get(name) {
-                if let Some(sql) = &table.sql {
-                    let deps = extract_dependencies(sql, &self.tables);
-                    let table = self.tables.get_mut(name).unwrap();
+            let deps = temp_tables
+                .get(name)
+                .and_then(|t| t.sql.as_ref())
+                .map(|sql| extract_dependencies(sql, &self.table_name_lookup));
+            if let Some(deps) = deps {
+                if let Some(table) = temp_tables.get_mut(name) {
                     table.dependencies = deps;
                 }
             }
         }
 
-        let infos = new_names
-            .iter()
-            .filter_map(|name| {
-                self.tables.get(name).map(|table| DagTableInfo {
-                    name: table.name.clone(),
-                    dependencies: table.dependencies.clone(),
-                })
-            })
-            .collect();
+        let mut infos = Vec::with_capacity(count);
+        for (name, table) in temp_tables {
+            infos.push(DagTableInfo {
+                name: table.name.clone(),
+                dependencies: table.dependencies.clone(),
+            });
+            self.tables.insert(name, Arc::new(table));
+        }
+
+        self.detect_cycles(&new_names)?;
 
         Ok(infos)
+    }
+
+    fn detect_cycles(&self, new_names: &[String]) -> Result<()> {
+        for start_name in new_names {
+            if let Some(cycle_node) = self.find_cycle_from(start_name) {
+                return Err(Error::InvalidRequest(format!(
+                    "Cycle detected involving table: {}",
+                    cycle_node
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn find_cycle_from(&self, start_name: &str) -> Option<String> {
+        const MAX_DEPTH: usize = 1000;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<(String, usize)> = vec![(start_name.to_string(), 0)];
+        let mut in_stack: HashSet<String> = HashSet::new();
+
+        while let Some((name, dep_idx)) = stack.pop() {
+            if stack.len() >= MAX_DEPTH {
+                return Some(format!("{} (max depth {} exceeded)", name, MAX_DEPTH));
+            }
+
+            if dep_idx == 0 {
+                if in_stack.contains(&name) {
+                    return Some(name);
+                }
+                if visited.contains(&name) {
+                    continue;
+                }
+                in_stack.insert(name.clone());
+            }
+
+            if let Some(table) = self.tables.get(&name) {
+                if dep_idx < table.dependencies.len() {
+                    stack.push((name.clone(), dep_idx + 1));
+                    stack.push((table.dependencies[dep_idx].clone(), 0));
+                    continue;
+                }
+            }
+
+            visited.insert(name.clone());
+            in_stack.remove(&name);
+        }
+
+        None
     }
 
     pub async fn run(
@@ -172,18 +248,10 @@ impl Pipeline {
             })
             .collect();
 
-        let max_concurrency = std::env::var("BQ_MAX_CONCURRENCY")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MAX_CONCURRENCY);
-
-        let state = Arc::new(Mutex::new(StreamState {
+        let state = Arc::new(Mutex::new(StreamState::new(
             pending_deps,
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency,
-        }));
+            self.max_concurrency,
+        )));
 
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
@@ -250,7 +318,7 @@ impl Pipeline {
     ) {
         let ready_to_spawn: Vec<String> = {
             let mut s = state.lock();
-            let ready = s.ready_tables();
+            let ready: Vec<String> = s.ready_tables().into_iter().cloned().collect();
             for name in &ready {
                 s.mark_in_flight(name);
             }
@@ -268,7 +336,9 @@ impl Pipeline {
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
-                let _ = tx.send((name, res)).await;
+                if tx.send((name.clone(), res)).await.is_err() {
+                    tracing::error!(table = %name, "Failed to send execution result - receiver dropped");
+                }
             });
         }
     }
@@ -385,12 +455,64 @@ impl Pipeline {
             .collect()
     }
 
-    pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
+    pub fn table_names(&self) -> Vec<String> {
+        self.tables.keys().cloned().collect()
+    }
+
+    pub fn register_table(&mut self, name: &str, sql: &str) -> Result<Vec<String>> {
+        self.table_name_lookup
+            .insert(name.to_uppercase(), name.to_string());
+        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup);
+        let table = PipelineTable {
+            name: name.to_string(),
+            sql: Some(sql.to_string()),
+            schema: None,
+            rows: vec![],
+            dependencies: deps.clone(),
+            is_source: false,
+        };
+        self.tables.insert(name.to_string(), Arc::new(table));
+        self.table_status
+            .insert(name.to_string(), TableStatus::Pending);
+
+        self.detect_cycles(&[name.to_string()])?;
+
+        Ok(deps)
+    }
+
+    pub fn remove_table(&mut self, name: &str) {
+        self.tables.remove(name);
+        self.table_status.remove(name);
+        self.table_name_lookup.remove(&name.to_uppercase());
+    }
+
+    pub async fn clear(&mut self, executor: &dyn ExecutorBackend) -> Result<()> {
+        let mut errors = Vec::new();
         for table_name in self.tables.keys() {
-            let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-            let _ = executor.execute_statement(&drop_sql).await;
+            let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(table_name));
+            if let Err(e) = executor.execute_statement(&drop_sql).await {
+                tracing::warn!(table = %table_name, error = %e, "Failed to drop table during clear");
+                errors.push(format!("{}: {}", table_name, e));
+            }
         }
         self.tables.clear();
+        self.table_status.clear();
+        self.table_name_lookup.clear();
+
+        if !errors.is_empty() {
+            return Err(Error::Executor(format!(
+                "Failed to drop {} table(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn clear_state(&mut self) {
+        self.tables.clear();
+        self.table_status.clear();
+        self.table_name_lookup.clear();
     }
 }
 
@@ -1956,13 +2078,7 @@ mod tests {
             .map(|name| (name.clone(), HashSet::new()))
             .collect();
 
-        let state = Arc::new(Mutex::new(StreamState {
-            pending_deps,
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: 10,
-        }));
+        let state = Arc::new(Mutex::new(StreamState::new(pending_deps, 10)));
 
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(20);
 
@@ -1984,18 +2100,17 @@ mod tests {
         drop(tx);
 
         let mut received = 0;
-        let mut completed_count = 0;
         while let Some((name, outcome)) = rx.recv().await {
             received += 1;
-            {
+            let completed_count = {
                 let mut s = state.lock();
                 s.finish_in_flight(&name);
                 match &outcome {
                     Ok(()) => s.mark_completed(&name),
                     Err(_) => s.mark_blocked(&name),
                 }
-                completed_count = s.completed.len() + s.blocked.len();
-            }
+                s.completed.len() + s.blocked.len()
+            };
             if completed_count >= 10 {
                 break;
             }
