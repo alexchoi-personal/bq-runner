@@ -14,55 +14,76 @@ use crate::validation::{quote_identifier, validate_sql_for_query, validate_table
 struct ParsedRows {
     column_names: Option<Vec<String>>,
     values: Vec<String>,
-    total_rows: usize,
 }
 
-fn parse_insert_rows(rows: &[Value]) -> ParsedRows {
-    let total_rows = rows.len();
+fn parse_insert_rows(rows: &[Value]) -> Result<ParsedRows> {
     if rows.is_empty() {
-        return ParsedRows {
+        return Ok(ParsedRows {
             column_names: None,
             values: vec![],
-            total_rows: 0,
-        };
+        });
     }
 
     let first_row = &rows[0];
-    let (column_names, values) = if let Value::Object(first_obj) = first_row {
+    let expects_object = matches!(first_row, Value::Object(_));
+
+    for (idx, row) in rows.iter().enumerate() {
+        let is_object = matches!(row, Value::Object(_));
+        let is_array = matches!(row, Value::Array(_));
+
+        if !is_object && !is_array {
+            return Err(Error::InvalidRequest(format!(
+                "Mixed row formats detected: row {} has invalid type '{}'. All rows must be either objects or arrays.",
+                idx,
+                match row {
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    _ => "unknown",
+                }
+            )));
+        }
+
+        if is_object != expects_object {
+            return Err(Error::InvalidRequest(format!(
+                "Mixed row formats detected: row 0 is {}, but row {} is {}. All rows must be either objects or arrays.",
+                if expects_object { "object" } else { "array" },
+                idx,
+                if is_object { "object" } else { "array" }
+            )));
+        }
+    }
+
+    let (column_names, values) = if expects_object {
+        let first_obj = first_row.as_object().unwrap();
         let cols: Vec<String> = first_obj.keys().cloned().collect();
         let vals: Vec<String> = rows
             .iter()
-            .filter_map(|row| {
-                if let Value::Object(obj) = row {
-                    let row_vals: Vec<String> =
-                        cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
-                    Some(format!("({})", row_vals.join(", ")))
-                } else {
-                    None
-                }
+            .map(|row| {
+                let obj = row.as_object().unwrap();
+                let row_vals: Vec<String> =
+                    cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
+                format!("({})", row_vals.join(", "))
             })
             .collect();
         (Some(cols), vals)
     } else {
         let vals: Vec<String> = rows
             .iter()
-            .filter_map(|row| {
-                if let Value::Array(arr) = row {
-                    let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                    Some(format!("({})", row_vals.join(", ")))
-                } else {
-                    None
-                }
+            .map(|row| {
+                let arr = row.as_array().unwrap();
+                let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
+                format!("({})", row_vals.join(", "))
             })
             .collect();
         (None, vals)
     };
 
-    ParsedRows {
+    Ok(ParsedRows {
         column_names,
         values,
-        total_rows,
-    }
+    })
 }
 
 fn build_insert_sql(
@@ -71,20 +92,50 @@ fn build_insert_sql(
     values: &[String],
 ) -> String {
     let quoted_table = format!("`{}`", quote_identifier(table_name));
+    let values_total_len: usize = values.iter().map(|v| v.len()).sum();
+    let values_joined_len = values_total_len + values.len().saturating_sub(1) * 2;
+
     match column_names {
         Some(cols) => {
-            let quoted_cols: Vec<String> = cols
-                .iter()
-                .map(|c| format!("`{}`", quote_identifier(c)))
-                .collect();
-            format!(
-                "INSERT INTO {} ({}) VALUES {}",
-                quoted_table,
-                quoted_cols.join(", "),
-                values.join(", ")
-            )
+            let cols_estimated_len: usize = cols.iter().map(|c| c.len() + 4).sum();
+            let estimated_len = 20 + quoted_table.len() + cols_estimated_len + values_joined_len;
+            let mut sql = String::with_capacity(estimated_len);
+
+            sql.push_str("INSERT INTO ");
+            sql.push_str(&quoted_table);
+            sql.push_str(" (");
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push('`');
+                sql.push_str(&quote_identifier(c));
+                sql.push('`');
+            }
+            sql.push_str(") VALUES ");
+            for (i, v) in values.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str(v);
+            }
+            sql
         }
-        None => format!("INSERT INTO {} VALUES {}", quoted_table, values.join(", ")),
+        None => {
+            let estimated_len = 20 + quoted_table.len() + values_joined_len;
+            let mut sql = String::with_capacity(estimated_len);
+
+            sql.push_str("INSERT INTO ");
+            sql.push_str(&quoted_table);
+            sql.push_str(" VALUES ");
+            for (i, v) in values.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str(v);
+            }
+            sql
+        }
     }
 }
 
@@ -459,14 +510,7 @@ impl RpcMethods {
             )));
         }
 
-        let parsed = parse_insert_rows(&p.rows);
-        let filtered_count = parsed.total_rows - parsed.values.len();
-        if filtered_count > 0 {
-            return Err(Error::InvalidRequest(format!(
-                "Mixed row formats detected in insert: {} of {} rows have inconsistent format. All rows must be either objects or arrays.",
-                filtered_count, parsed.total_rows
-            )));
-        }
+        let parsed = parse_insert_rows(&p.rows)?;
 
         let row_count = parsed.values.len() as u64;
         let sql = build_insert_sql(

@@ -7,7 +7,15 @@ pub use json::json_to_sql_value;
 pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_to_json};
 
 fn escape_sql_string(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
+    let escaped_count = s
+        .chars()
+        .filter(|&c| c == '\'' || c == '\\' || c == '\0')
+        .count();
+    if escaped_count == 0 {
+        return s.to_string();
+    }
+
+    let mut result = String::with_capacity(s.len() + escaped_count);
     for c in s.chars() {
         match c {
             '\'' => result.push_str("''"),

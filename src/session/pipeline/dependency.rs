@@ -9,18 +9,19 @@ use sqlparser::ast::{
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 
-const SQL_CACHE_SIZE: usize = 256;
+const SQL_CACHE_SIZE_PER_SHARD: usize = 64;
+const CACHE_SHARDS: usize = 8;
 
-struct ParseCache {
+struct ParseCacheShard {
     entries: HashMap<u64, Vec<Statement>>,
     order: VecDeque<u64>,
 }
 
-impl ParseCache {
+impl ParseCacheShard {
     fn new() -> Self {
         Self {
-            entries: HashMap::with_capacity(SQL_CACHE_SIZE),
-            order: VecDeque::with_capacity(SQL_CACHE_SIZE),
+            entries: HashMap::with_capacity(SQL_CACHE_SIZE_PER_SHARD),
+            order: VecDeque::with_capacity(SQL_CACHE_SIZE_PER_SHARD),
         }
     }
 
@@ -32,7 +33,7 @@ impl ParseCache {
         if self.entries.contains_key(&hash) {
             return;
         }
-        if self.entries.len() >= SQL_CACHE_SIZE {
+        if self.entries.len() >= SQL_CACHE_SIZE_PER_SHARD {
             if let Some(old_hash) = self.order.pop_front() {
                 self.entries.remove(&old_hash);
             }
@@ -42,7 +43,23 @@ impl ParseCache {
     }
 }
 
-static PARSE_CACHE: LazyLock<Mutex<ParseCache>> = LazyLock::new(|| Mutex::new(ParseCache::new()));
+struct ShardedParseCache {
+    shards: [Mutex<ParseCacheShard>; CACHE_SHARDS],
+}
+
+impl ShardedParseCache {
+    fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Mutex::new(ParseCacheShard::new())),
+        }
+    }
+
+    fn get_shard(&self, hash: u64) -> &Mutex<ParseCacheShard> {
+        &self.shards[(hash as usize) % CACHE_SHARDS]
+    }
+}
+
+static PARSE_CACHE: LazyLock<ShardedParseCache> = LazyLock::new(ShardedParseCache::new);
 
 fn hash_sql(sql: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -52,18 +69,23 @@ fn hash_sql(sql: &str) -> u64 {
 
 fn parse_sql_cached(sql: &str) -> Option<Vec<Statement>> {
     let hash = hash_sql(sql);
+    let shard = PARSE_CACHE.get_shard(hash);
+
     {
-        let mut cache = PARSE_CACHE.lock();
+        let mut cache = shard.lock();
         if let Some(statements) = cache.get(hash) {
             return Some(statements);
         }
     }
+
     let dialect = BigQueryDialect {};
     let statements = Parser::parse_sql(&dialect, sql).ok()?;
+
     {
-        let mut cache = PARSE_CACHE.lock();
+        let mut cache = shard.lock();
         cache.insert(hash, statements.clone());
     }
+
     Some(statements)
 }
 

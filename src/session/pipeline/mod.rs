@@ -100,45 +100,51 @@ impl Pipeline {
 
     fn detect_cycles(&self, new_names: &[String]) -> Result<()> {
         for start_name in new_names {
-            let mut visited: HashSet<String> = HashSet::new();
-            let mut stack: HashSet<String> = HashSet::new();
-
-            if self.has_cycle_from(start_name, &mut visited, &mut stack) {
+            if let Some(cycle_node) = self.find_cycle_from(start_name) {
                 return Err(Error::InvalidRequest(format!(
                     "Cycle detected involving table: {}",
-                    start_name
+                    cycle_node
                 )));
             }
         }
         Ok(())
     }
 
-    fn has_cycle_from(
-        &self,
-        name: &str,
-        visited: &mut HashSet<String>,
-        stack: &mut HashSet<String>,
-    ) -> bool {
-        if stack.contains(name) {
-            return true;
-        }
-        if visited.contains(name) {
-            return false;
-        }
+    fn find_cycle_from(&self, start_name: &str) -> Option<String> {
+        const MAX_DEPTH: usize = 1000;
 
-        visited.insert(name.to_string());
-        stack.insert(name.to_string());
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<(String, usize)> = vec![(start_name.to_string(), 0)];
+        let mut in_stack: HashSet<String> = HashSet::new();
 
-        if let Some(table) = self.tables.get(name) {
-            for dep in &table.dependencies {
-                if self.has_cycle_from(dep, visited, stack) {
-                    return true;
+        while let Some((name, dep_idx)) = stack.pop() {
+            if stack.len() >= MAX_DEPTH {
+                return Some(format!("{} (max depth {} exceeded)", name, MAX_DEPTH));
+            }
+
+            if dep_idx == 0 {
+                if in_stack.contains(&name) {
+                    return Some(name);
+                }
+                if visited.contains(&name) {
+                    continue;
+                }
+                in_stack.insert(name.clone());
+            }
+
+            if let Some(table) = self.tables.get(&name) {
+                if dep_idx < table.dependencies.len() {
+                    stack.push((name.clone(), dep_idx + 1));
+                    stack.push((table.dependencies[dep_idx].clone(), 0));
+                    continue;
                 }
             }
+
+            visited.insert(name.clone());
+            in_stack.remove(&name);
         }
 
-        stack.remove(name);
-        false
+        None
     }
 
     pub async fn run(
@@ -332,7 +338,9 @@ impl Pipeline {
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
-                let _ = tx.send((name, res)).await;
+                if tx.send((name.clone(), res)).await.is_err() {
+                    tracing::error!(table = %name, "Failed to send execution result - receiver dropped");
+                }
             });
         }
     }
@@ -480,16 +488,27 @@ impl Pipeline {
         self.table_name_lookup.remove(&name.to_uppercase());
     }
 
-    pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
+    pub async fn clear(&mut self, executor: &dyn ExecutorBackend) -> Result<()> {
+        let mut errors = Vec::new();
         for table_name in self.tables.keys() {
             let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(table_name));
             if let Err(e) = executor.execute_statement(&drop_sql).await {
-                tracing::debug!(table = %table_name, error = %e, "Failed to drop table during clear");
+                tracing::warn!(table = %table_name, error = %e, "Failed to drop table during clear");
+                errors.push(format!("{}: {}", table_name, e));
             }
         }
         self.tables.clear();
         self.table_status.clear();
         self.table_name_lookup.clear();
+
+        if !errors.is_empty() {
+            return Err(Error::Executor(format!(
+                "Failed to drop {} table(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
+        }
+        Ok(())
     }
 
     pub fn clear_state(&mut self) {

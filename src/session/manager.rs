@@ -388,8 +388,7 @@ impl SessionManager {
                 std::mem::take(&mut session.pipeline),
             )
         };
-        pipeline.clear(executor.as_ref()).await;
-        Ok(())
+        pipeline.clear(executor.as_ref()).await
     }
 
     pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
@@ -552,31 +551,46 @@ impl SessionManager {
         executor: Arc<dyn ExecutorBackend>,
         parquet_files: Vec<loader::ParquetFile>,
     ) -> Result<Vec<ParquetTableInfo>> {
-        let mut handles = Vec::new();
+        use futures::future::join_all;
 
-        for pf in parquet_files {
-            let executor = Arc::clone(&executor);
-            let handle = tokio::spawn(async move {
-                let row_count = executor
-                    .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
-                    .await?;
-                Ok::<_, Error>(ParquetTableInfo {
-                    project: pf.project,
-                    dataset: pf.dataset,
-                    table: pf.table,
-                    path: pf.path,
-                    row_count,
+        let handles: Vec<_> = parquet_files
+            .into_iter()
+            .map(|pf| {
+                let executor = Arc::clone(&executor);
+                tokio::spawn(async move {
+                    let row_count = executor
+                        .load_parquet(&pf.full_table_name(), &pf.path, &pf.schema)
+                        .await?;
+                    Ok::<_, Error>(ParquetTableInfo {
+                        project: pf.project,
+                        dataset: pf.dataset,
+                        table: pf.table,
+                        path: pf.path,
+                        row_count,
+                    })
                 })
-            });
-            handles.push(handle);
+            })
+            .collect();
+
+        let joined = join_all(handles).await;
+
+        let mut results = Vec::with_capacity(joined.len());
+        let mut errors = Vec::new();
+
+        for join_result in joined {
+            match join_result {
+                Ok(Ok(info)) => results.push(info),
+                Ok(Err(e)) => errors.push(e.to_string()),
+                Err(e) => errors.push(format!("Task join error: {}", e)),
+            }
         }
 
-        let mut results = Vec::new();
-        for handle in handles {
-            let result = handle
-                .await
-                .map_err(|e| Error::Executor(format!("Task join error: {}", e)))??;
-            results.push(result);
+        if !errors.is_empty() {
+            return Err(Error::Executor(format!(
+                "Failed to load {} parquet file(s): {}",
+                errors.len(),
+                errors.join("; ")
+            )));
         }
 
         Ok(results)

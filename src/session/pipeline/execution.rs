@@ -45,23 +45,80 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
             executor.execute_statement(&create_sql).await?;
 
             if !query_result.rows.is_empty() {
-                const INSERT_BATCH_SIZE: usize = 1000;
-                let values: Vec<String> = query_result
-                    .rows
-                    .iter()
-                    .map(|row| {
-                        let vals: Vec<String> = row.iter().map(json_to_sql_value).collect();
-                        format!("({})", vals.join(", "))
-                    })
-                    .collect();
-
-                for chunk in values.chunks(INSERT_BATCH_SIZE) {
-                    let insert_sql =
-                        format!("INSERT INTO {} VALUES {}", quoted_name, chunk.join(", "));
-                    executor.execute_statement(&insert_sql).await?;
-                }
+                insert_rows_batched(executor, &quoted_name, &query_result.rows).await?;
             }
         }
+    }
+
+    Ok(())
+}
+
+const INSERT_BATCH_SIZE: usize = 1000;
+
+async fn insert_rows_batched(
+    executor: &dyn ExecutorBackend,
+    quoted_name: &str,
+    rows: &[Vec<Value>],
+) -> Result<()> {
+    let mut batch = Vec::with_capacity(INSERT_BATCH_SIZE.min(rows.len()));
+
+    for row in rows {
+        let vals: Vec<String> = row.iter().map(json_to_sql_value).collect();
+        batch.push(format!("({})", vals.join(", ")));
+
+        if batch.len() >= INSERT_BATCH_SIZE {
+            let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+            executor.execute_statement(&insert_sql).await?;
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
+        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+        executor.execute_statement(&insert_sql).await?;
+    }
+
+    Ok(())
+}
+
+async fn insert_source_rows_batched(
+    executor: &dyn ExecutorBackend,
+    quoted_name: &str,
+    table_name: &str,
+    rows: &[Value],
+) -> Result<()> {
+    let mut batch = Vec::with_capacity(INSERT_BATCH_SIZE.min(rows.len()));
+
+    for (idx, row) in rows.iter().enumerate() {
+        if let Value::Array(arr) = row {
+            let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
+            batch.push(format!("({})", vals.join(", ")));
+
+            if batch.len() >= INSERT_BATCH_SIZE {
+                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+                executor.execute_statement(&insert_sql).await?;
+                batch.clear();
+            }
+        } else {
+            return Err(Error::Executor(format!(
+                "Invalid row format at index {} in table '{}': expected array, got {}",
+                idx,
+                table_name,
+                match row {
+                    Value::Object(_) => "object",
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    _ => "unknown",
+                }
+            )));
+        }
+    }
+
+    if !batch.is_empty() {
+        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch.join(", "));
+        executor.execute_statement(&insert_sql).await?;
     }
 
     Ok(())
@@ -86,33 +143,7 @@ async fn create_source_table_standalone(
         executor.execute_statement(&create_sql).await?;
 
         if !table.rows.is_empty() {
-            const INSERT_BATCH_SIZE: usize = 1000;
-            let mut values: Vec<String> = Vec::with_capacity(table.rows.len());
-            for (idx, row) in table.rows.iter().enumerate() {
-                if let Value::Array(arr) = row {
-                    let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                    values.push(format!("({})", vals.join(", ")));
-                } else {
-                    return Err(Error::Executor(format!(
-                        "Invalid row format at index {} in table '{}': expected array, got {}",
-                        idx,
-                        table.name,
-                        match row {
-                            Value::Object(_) => "object",
-                            Value::String(_) => "string",
-                            Value::Number(_) => "number",
-                            Value::Bool(_) => "boolean",
-                            Value::Null => "null",
-                            _ => "unknown",
-                        }
-                    )));
-                }
-            }
-
-            for chunk in values.chunks(INSERT_BATCH_SIZE) {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, chunk.join(", "));
-                executor.execute_statement(&insert_sql).await?;
-            }
+            insert_source_rows_batched(executor, &quoted_name, &table.name, &table.rows).await?;
         }
     }
     Ok(())
