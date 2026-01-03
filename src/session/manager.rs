@@ -415,10 +415,8 @@ impl SessionManager {
             let session = sessions
                 .get(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
-            (
-                Arc::clone(&session.executor),
-                session.pipeline.table_names(),
-            )
+            let table_names = session.pipeline.table_names();
+            (Arc::clone(&session.executor), table_names)
         };
 
         for name in &table_names {

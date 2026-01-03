@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
             log_security_config(&config);
             let metrics_handle = PrometheusBuilder::new()
                 .install_recorder()
-                .expect("Failed to install Prometheus recorder");
+                .map_err(|e| anyhow::anyhow!("Failed to install Prometheus recorder: {}", e))?;
             run_http_server(port, methods, metrics_handle, &config).await
         }
         Transport::Unix { path } => {
@@ -303,11 +303,21 @@ async fn run_unix_server(
         rate_limit_burst
     );
 
-    // Create a shared rate limiter for all connections
-    let quota = Quota::per_second(
-        NonZeroU32::new(rate_limit_per_second as u32).unwrap_or(NonZeroU32::new(100).unwrap()),
-    )
-    .allow_burst(NonZeroU32::new(rate_limit_burst).unwrap_or(NonZeroU32::new(200).unwrap()));
+    let rps = match NonZeroU32::new(rate_limit_per_second as u32) {
+        Some(v) => v,
+        None => {
+            tracing::warn!("rate_limit_per_second is 0, defaulting to 100");
+            NonZeroU32::new(100).unwrap()
+        }
+    };
+    let burst = match NonZeroU32::new(rate_limit_burst) {
+        Some(v) => v,
+        None => {
+            tracing::warn!("rate_limit_burst is 0, defaulting to 200");
+            NonZeroU32::new(200).unwrap()
+        }
+    };
+    let quota = Quota::per_second(rps).allow_burst(burst);
     let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
     let (shutdown_tx, _) = watch::channel(false);
@@ -447,7 +457,7 @@ async fn run_http_server(
             .per_second(rate_limit_per_second)
             .burst_size(rate_limit_burst)
             .finish()
-            .expect("Failed to build governor config"),
+            .ok_or_else(|| anyhow::anyhow!("Failed to build governor config"))?,
     );
     let governor_limiter = governor_conf.limiter().clone();
 
@@ -488,17 +498,23 @@ async fn run_http_server(
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to install Ctrl+C handler: {}", e);
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("Failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                error!("Failed to install SIGTERM handler: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]

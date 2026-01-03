@@ -243,10 +243,17 @@ impl Pipeline {
             })
             .collect();
 
-        let max_concurrency = std::env::var("BQ_MAX_CONCURRENCY")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MAX_CONCURRENCY);
+        let max_concurrency = match std::env::var("BQ_MAX_CONCURRENCY") {
+            Ok(s) => s.parse().unwrap_or_else(|_| {
+                tracing::warn!(
+                    value = %s,
+                    "Invalid BQ_MAX_CONCURRENCY value, using default {}",
+                    DEFAULT_MAX_CONCURRENCY
+                );
+                DEFAULT_MAX_CONCURRENCY
+            }),
+            Err(_) => DEFAULT_MAX_CONCURRENCY,
+        };
 
         let state = Arc::new(Mutex::new(StreamState {
             pending_deps,

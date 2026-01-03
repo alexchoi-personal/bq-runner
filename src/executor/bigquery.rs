@@ -248,9 +248,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery query failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery query failed: {}", e)))?;
 
         let columns: Vec<ColumnInfo> = response
             .schema
@@ -295,9 +293,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery statement failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery statement failed: {}", e)))?;
 
         Ok(response.num_dml_affected_rows.unwrap_or(0) as u64)
     }

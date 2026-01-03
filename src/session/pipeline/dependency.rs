@@ -12,8 +12,19 @@ pub fn extract_dependencies(
     sql: &str,
     known_tables: &HashMap<String, PipelineTable>,
 ) -> Vec<String> {
-    let cte_names = extract_cte_names_ast(sql);
-    let referenced_tables = extract_table_references_ast(sql);
+    let dialect = BigQueryDialect {};
+    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
+        return vec![];
+    };
+
+    let mut cte_names = HashSet::new();
+    let mut referenced_tables = HashSet::new();
+    for statement in &statements {
+        if let Statement::Query(query) = statement {
+            collect_cte_names_from_query(query, &mut cte_names);
+        }
+        collect_tables_from_statement(statement, &mut referenced_tables);
+    }
 
     let known_upper: HashMap<String, String> = known_tables
         .keys()
@@ -22,11 +33,14 @@ pub fn extract_dependencies(
 
     let mut deps: Vec<String> = referenced_tables
         .into_iter()
-        .filter(|t| {
+        .filter_map(|t| {
             let upper = t.to_uppercase();
-            !cte_names.contains(&upper) && known_upper.contains_key(&upper)
+            if !cte_names.contains(&upper) {
+                known_upper.get(&upper).cloned()
+            } else {
+                None
+            }
         })
-        .filter_map(|t| known_upper.get(&t.to_uppercase()).cloned())
         .collect();
 
     deps.sort();
@@ -35,11 +49,7 @@ pub fn extract_dependencies(
 }
 
 #[cfg(test)]
-fn extract_cte_names(sql: &str) -> HashSet<String> {
-    extract_cte_names_ast(sql)
-}
-
-fn extract_cte_names_ast(sql: &str) -> HashSet<String> {
+pub(super) fn extract_cte_names(sql: &str) -> HashSet<String> {
     let dialect = BigQueryDialect {};
     let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
         return HashSet::new();
@@ -64,19 +74,6 @@ fn collect_cte_names_from_with(with: &With, cte_names: &mut HashSet<String>) {
     for cte in &with.cte_tables {
         cte_names.insert(cte.alias.name.value.to_uppercase());
     }
-}
-
-fn extract_table_references_ast(sql: &str) -> HashSet<String> {
-    let dialect = BigQueryDialect {};
-    let Ok(statements) = Parser::parse_sql(&dialect, sql) else {
-        return HashSet::new();
-    };
-
-    let mut tables = HashSet::new();
-    for statement in statements {
-        collect_tables_from_statement(&statement, &mut tables);
-    }
-    tables
 }
 
 fn collect_tables_from_statement(statement: &Statement, tables: &mut HashSet<String>) {
