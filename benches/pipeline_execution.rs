@@ -2,7 +2,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 
 use bq_runner::domain::ColumnType;
-use bq_runner::{ColumnDef, DagTableDef, Pipeline, YachtSqlExecutor};
+use bq_runner::executor::YachtSqlExecutor;
+use bq_runner::{ColumnDef, DagTableDef, Pipeline};
 use serde_json::json;
 
 fn create_source_table(name: &str, columns: Vec<(&str, ColumnType)>) -> DagTableDef {
@@ -54,45 +55,6 @@ fn bench_pipeline_register(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_pipeline_build_execution_plan(c: &mut Criterion) {
-    let mut group = c.benchmark_group("pipeline_execution_plan");
-
-    for depth in [5, 10, 20] {
-        group.bench_with_input(
-            BenchmarkId::new("chain_depth", depth),
-            &depth,
-            |b, &depth| {
-                b.iter_with_setup(
-                    || {
-                        let mut pipeline = Pipeline::new();
-                        let source = create_source_table("source", vec![("id", ColumnType::Int64)]);
-                        pipeline.register(vec![source]).unwrap();
-
-                        for i in 0..depth {
-                            let prev = if i == 0 {
-                                "source".to_string()
-                            } else {
-                                format!("step_{}", i - 1)
-                            };
-                            let table = create_computed_table(
-                                &format!("step_{}", i),
-                                &format!("SELECT * FROM {}", prev),
-                            );
-                            pipeline.register(vec![table]).unwrap();
-                        }
-                        pipeline
-                    },
-                    |pipeline| {
-                        pipeline.build_execution_plan(None, false).unwrap();
-                    },
-                );
-            },
-        );
-    }
-
-    group.finish();
-}
-
 fn bench_pipeline_execution(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("pipeline_execution");
@@ -133,11 +95,6 @@ fn bench_pipeline_execution(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_pipeline_register,
-    bench_pipeline_build_execution_plan,
-    bench_pipeline_execution,
-);
+criterion_group!(benches, bench_pipeline_register, bench_pipeline_execution,);
 
 criterion_main!(benches);

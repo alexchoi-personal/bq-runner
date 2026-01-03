@@ -34,26 +34,6 @@ impl Pipeline {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn get_table_status(&self, name: &str) -> TableStatus {
-        self.table_status
-            .get(name)
-            .copied()
-            .unwrap_or(TableStatus::Pending)
-    }
-
-    #[allow(dead_code)]
-    pub fn set_table_status(&mut self, name: &str, status: TableStatus) {
-        self.table_status.insert(name.to_string(), status);
-    }
-
-    #[allow(dead_code)]
-    pub fn reset_all_status(&mut self) {
-        for name in self.tables.keys() {
-            self.table_status.insert(name.clone(), TableStatus::Pending);
-        }
-    }
-
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
         let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
 
@@ -73,10 +53,16 @@ impl Pipeline {
         }
 
         for name in &new_names {
-            if let Some(table) = self.tables.get(name) {
-                if let Some(sql) = &table.sql {
-                    let deps = extract_dependencies(sql, &self.tables);
-                    let table = self.tables.get_mut(name).unwrap();
+            let deps = if let Some(table) = self.tables.get(name) {
+                table
+                    .sql
+                    .as_ref()
+                    .map(|sql| extract_dependencies(sql, &self.tables))
+            } else {
+                None
+            };
+            if let Some(deps) = deps {
+                if let Some(table) = self.tables.get_mut(name) {
                     table.dependencies = deps;
                 }
             }
@@ -481,8 +467,9 @@ impl Pipeline {
             .insert(name.to_string(), TableStatus::Pending);
 
         let deps = dependency::extract_dependencies(sql, &self.tables);
-        let table = self.tables.get_mut(name).unwrap();
-        table.dependencies = deps.clone();
+        if let Some(table) = self.tables.get_mut(name) {
+            table.dependencies = deps.clone();
+        }
 
         self.detect_cycles(&[name.to_string()])?;
 

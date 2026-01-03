@@ -9,7 +9,7 @@ use glob::glob;
 use crate::config::SecurityConfig;
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
-use crate::validation::{open_file_secure, validate_path};
+use crate::validation::{open_file_secure, validate_path, validate_path_async};
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -95,11 +95,19 @@ impl SqlLoader {
     }
 }
 
-/// Discover files with security validation.
-/// Validates the root path against allowed paths before scanning.
 pub fn discover_files_secure(root_path: &str, config: &SecurityConfig) -> Result<DiscoveredFiles> {
     let validated_root = validate_path(root_path, config)?;
     discover_files_internal(&validated_root)
+}
+
+pub async fn discover_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<DiscoveredFiles> {
+    let validated_root = validate_path_async(root_path, config).await?;
+    tokio::task::spawn_blocking(move || discover_files_internal(&validated_root))
+        .await
+        .map_err(|e| Error::Internal(format!("Task join error: {}", e)))?
 }
 
 #[cfg(test)]
@@ -184,6 +192,14 @@ pub fn discover_sql_files_secure(root_path: &str, config: &SecurityConfig) -> Re
     Ok(discovered.sql_files)
 }
 
+pub async fn discover_sql_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<SqlFile>> {
+    let discovered = discover_files_secure_async(root_path, config).await?;
+    Ok(discovered.sql_files)
+}
+
 #[cfg(test)]
 fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files(root_path)?;
@@ -195,6 +211,14 @@ pub fn discover_parquet_files_secure(
     config: &SecurityConfig,
 ) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files_secure(root_path, config)?;
+    Ok(discovered.parquet_files)
+}
+
+pub async fn discover_parquet_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<ParquetFile>> {
+    let discovered = discover_files_secure_async(root_path, config).await?;
     Ok(discovered.parquet_files)
 }
 

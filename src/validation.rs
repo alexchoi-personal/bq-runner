@@ -246,9 +246,7 @@ fn validate_expr(expr: &Expr) -> Result<()> {
     }
 }
 
-// Path Validation
-
-pub fn validate_path(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
+fn validate_path_preliminary(path: &str) -> Result<&Path> {
     let path = Path::new(path);
 
     if path.to_string_lossy().contains('\0') {
@@ -261,7 +259,11 @@ pub fn validate_path(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
         }
     }
 
-    if config.block_symlinks {
+    Ok(path)
+}
+
+fn validate_path_io(path: &Path, block_symlinks: bool) -> Result<PathBuf> {
+    if block_symlinks {
         match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(Error::InvalidRequest("Symlinks not allowed".into()));
@@ -273,14 +275,15 @@ pub fn validate_path(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
         }
     }
 
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|e| Error::InvalidRequest(format!("Invalid path: {}", e)))?;
+    std::fs::canonicalize(path).map_err(|e| Error::InvalidRequest(format!("Invalid path: {}", e)))
+}
 
-    if config.allowed_paths.is_empty() {
+fn check_allowed_paths(canonical: PathBuf, allowed_paths: &[PathBuf]) -> Result<PathBuf> {
+    if allowed_paths.is_empty() {
         return Err(Error::InvalidRequest("Path access denied".into()));
     }
 
-    for allowed in &config.allowed_paths {
+    for allowed in allowed_paths {
         if let Ok(allowed_canonical) = std::fs::canonicalize(allowed) {
             if canonical.starts_with(&allowed_canonical) {
                 return Ok(canonical);
@@ -289,6 +292,26 @@ pub fn validate_path(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
     }
 
     Err(Error::InvalidRequest("Path access denied".into()))
+}
+
+pub fn validate_path(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
+    let path = validate_path_preliminary(path)?;
+    let canonical = validate_path_io(path, config.block_symlinks)?;
+    check_allowed_paths(canonical, &config.allowed_paths)
+}
+
+pub async fn validate_path_async(path: &str, config: &SecurityConfig) -> Result<PathBuf> {
+    let path = validate_path_preliminary(path)?;
+    let path_owned = path.to_path_buf();
+    let block_symlinks = config.block_symlinks;
+    let allowed_paths = config.allowed_paths.clone();
+
+    let canonical =
+        tokio::task::spawn_blocking(move || validate_path_io(&path_owned, block_symlinks))
+            .await
+            .map_err(|e| Error::Internal(format!("Task join error: {}", e)))??;
+
+    check_allowed_paths(canonical, &allowed_paths)
 }
 
 #[cfg(unix)]

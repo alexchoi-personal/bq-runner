@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{State, WebSocketUpgrade},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -19,12 +19,12 @@ use tokio::signal;
 use tokio::sync::watch;
 use tower::ServiceBuilder;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::EnvFilter;
 
 use bq_runner::executor::ExecutorMode;
 use bq_runner::rpc::{handle_websocket, process_message, RpcMethods};
-use bq_runner::{Config, LogFormat, SessionManager};
+use bq_runner::{AuthConfig, Config, LogFormat, SessionManager};
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum Backend {
@@ -111,6 +111,8 @@ struct Args {
 struct AppState {
     methods: Arc<RpcMethods>,
     metrics_handle: PrometheusHandle,
+    auth: AuthConfig,
+    audit_enabled: bool,
 }
 
 #[tokio::main]
@@ -217,6 +219,96 @@ fn log_security_config(config: &Config) {
     if config.logging.audit_enabled {
         info!("Audit logging: enabled");
     }
+    if config.auth.enabled {
+        info!("API key authentication: enabled");
+    }
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+fn validate_auth(auth: &AuthConfig, headers: &HeaderMap, audit_enabled: bool) -> bool {
+    if !auth.enabled {
+        return true;
+    }
+    match extract_bearer_token(headers) {
+        Some(token) => {
+            let valid = auth.validate_key(token);
+            if !valid && audit_enabled {
+                warn!(
+                    target: "audit",
+                    event = "auth_failure",
+                    reason = "invalid_api_key",
+                    "Authentication failed: invalid API key"
+                );
+            }
+            valid
+        }
+        None => {
+            if audit_enabled {
+                warn!(
+                    target: "audit",
+                    event = "auth_failure",
+                    reason = "missing_authorization_header",
+                    "Authentication failed: missing Authorization header"
+                );
+            }
+            false
+        }
+    }
+}
+
+async fn unix_socket_authenticate(
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    auth: &AuthConfig,
+    audit_enabled: bool,
+) -> bool {
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                #[derive(serde::Deserialize)]
+                struct AuthMessage {
+                    api_key: String,
+                }
+                match serde_json::from_str::<AuthMessage>(&line) {
+                    Ok(msg) => {
+                        let valid = auth.validate_key(&msg.api_key);
+                        if !valid && audit_enabled {
+                            warn!(
+                                target: "audit",
+                                event = "auth_failure",
+                                reason = "invalid_api_key",
+                                transport = "unix",
+                                "Authentication failed: invalid API key"
+                            );
+                        }
+                        return valid;
+                    }
+                    Err(_) => {
+                        if audit_enabled {
+                            warn!(
+                                target: "audit",
+                                event = "auth_failure",
+                                reason = "invalid_auth_message",
+                                transport = "unix",
+                                "Authentication failed: first message must be auth handshake"
+                            );
+                        }
+                        return false;
+                    }
+                }
+            }
+            Ok(None) => return false,
+            Err(_) => return false,
+        }
+    }
 }
 
 async fn run_stdio_server(methods: Arc<RpcMethods>) -> anyhow::Result<()> {
@@ -320,6 +412,9 @@ async fn run_unix_server(
     let quota = Quota::per_second(rps).allow_burst(burst);
     let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
+    let auth = config.auth.clone();
+    let audit_enabled = config.logging.audit_enabled;
+
     let (shutdown_tx, _) = watch::channel(false);
     let active_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -347,10 +442,62 @@ async fn run_unix_server(
                         conn_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                         let rate_limiter = Arc::clone(&rate_limiter);
+                        let auth_config = auth.clone();
+                        let audit = audit_enabled;
 
                         tokio::spawn(async move {
                             let (reader, mut writer) = stream.into_split();
                             let mut lines = BufReader::new(reader).lines();
+
+                            if auth_config.enabled {
+                                let auth_result = tokio::time::timeout(
+                                    Duration::from_secs(30),
+                                    unix_socket_authenticate(&mut lines, &auth_config, audit)
+                                ).await;
+                                match auth_result {
+                                    Ok(true) => {
+                                        let ok_response = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "result": {"authenticated": true},
+                                            "id": null
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&ok_response) {
+                                            let _ = writer.write_all(text.as_bytes()).await;
+                                            let _ = writer.write_all(b"\n").await;
+                                            let _ = writer.flush().await;
+                                        }
+                                    }
+                                    Ok(false) => {
+                                        let error_response = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "error": {
+                                                "code": -32001,
+                                                "message": "Unauthorized"
+                                            },
+                                            "id": null
+                                        });
+                                        if let Ok(text) = serde_json::to_string(&error_response) {
+                                            let _ = writer.write_all(text.as_bytes()).await;
+                                            let _ = writer.write_all(b"\n").await;
+                                            let _ = writer.flush().await;
+                                        }
+                                        conn_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                                        return;
+                                    }
+                                    Err(_) => {
+                                        if audit {
+                                            warn!(
+                                                target: "audit",
+                                                event = "auth_failure",
+                                                reason = "auth_timeout",
+                                                "Authentication failed: timeout waiting for auth message"
+                                            );
+                                        }
+                                        conn_counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                                        return;
+                                    }
+                                }
+                            }
 
                             loop {
                                 tokio::select! {
@@ -447,6 +594,8 @@ async fn run_http_server(
     let state = AppState {
         methods,
         metrics_handle,
+        auth: config.auth.clone(),
+        audit_enabled: config.logging.audit_enabled,
     };
 
     let rate_limit_per_second = config.rpc.rate_limit_per_second;
@@ -472,7 +621,7 @@ async fn run_http_server(
         }))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!(
         "Listening on ws://{} (rate limit: {} req/s, burst: {})",
         addr, rate_limit_per_second, rate_limit_burst
@@ -533,7 +682,18 @@ async fn shutdown_signal() {
 // Maximum WebSocket message size: 16MB
 const MAX_WS_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+async fn ws_handler(
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    if !validate_auth(&state.auth, &headers, state.audit_enabled) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        )
+            .into_response();
+    }
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| handle_websocket(socket, state.methods))
 }

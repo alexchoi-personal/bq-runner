@@ -114,6 +114,26 @@ impl Default for RpcConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl AuthConfig {
+    pub fn validate_key(&self, provided_key: &str) -> bool {
+        match &self.api_key {
+            Some(expected) => {
+                use subtle::ConstantTimeEq;
+                expected.as_bytes().ct_eq(provided_key.as_bytes()).into()
+            }
+            None => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub security: SecurityConfig,
@@ -123,6 +143,8 @@ pub struct Config {
     pub session: SessionConfig,
     #[serde(default)]
     pub rpc: RpcConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 impl Config {
@@ -198,6 +220,13 @@ impl Config {
                 ),
             }
         }
+        if let Ok(val) = std::env::var("BQ_RUNNER_API_KEY") {
+            config.auth.api_key = Some(val);
+            config.auth.enabled = true;
+        }
+        if let Ok(val) = std::env::var("BQ_RUNNER_AUTH_ENABLED") {
+            config.auth.enabled = val == "true" || val == "1";
+        }
 
         config.validate()?;
         Ok(config)
@@ -226,6 +255,11 @@ impl Config {
         if self.rpc.rate_limit_burst == 0 {
             return Err(Error::InvalidRequest(
                 "rate_limit_burst must be greater than 0".into(),
+            ));
+        }
+        if self.auth.enabled && self.auth.api_key.is_none() {
+            return Err(Error::InvalidRequest(
+                "auth.enabled is true but no api_key configured".into(),
             ));
         }
 
