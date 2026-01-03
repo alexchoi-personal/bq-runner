@@ -1,3 +1,4 @@
+pub mod config;
 pub mod domain;
 pub mod error;
 pub mod executor;
@@ -7,6 +8,7 @@ pub mod session;
 pub mod utils;
 pub mod validation;
 
+pub use config::{Config, LogFormat, LoggingConfig, SecurityConfig};
 pub use domain::{ColumnDef, TableDef, TableInfo};
 pub use error::{Error, Result};
 pub use executor::converters::json_to_sql_value;
