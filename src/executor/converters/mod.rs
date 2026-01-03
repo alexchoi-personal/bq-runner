@@ -2,13 +2,17 @@ mod arrow;
 mod json;
 mod yacht;
 
+#[cfg(test)]
 use std::borrow::Cow;
 
+#[cfg(test)]
 pub(crate) use arrow::arrow_value_to_sql;
+pub(crate) use arrow::arrow_value_to_sql_into;
 pub use json::json_to_sql_value;
 pub(crate) use json::json_to_sql_value_into;
 pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_to_json};
 
+#[cfg(test)]
 fn escape_sql_string(s: &str) -> Cow<'_, str> {
     let needs_escaping = s.chars().any(|c| c == '\'' || c == '\\' || c == '\0');
     if !needs_escaping {

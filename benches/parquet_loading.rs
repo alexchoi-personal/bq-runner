@@ -57,9 +57,8 @@ fn bench_parquet_loading(c: &mut Criterion) {
             BenchmarkId::new("load_rows", row_count),
             &(path, schema),
             |b, (path, schema)| {
-                b.to_async(&rt).iter_with_setup(
-                    || YachtSqlExecutor::new(),
-                    |executor| async move {
+                b.to_async(&rt)
+                    .iter_with_setup(YachtSqlExecutor::new, |executor| async move {
                         let table_name = format!("bench_table_{}", rand::random::<u32>());
                         let result = executor
                             .load_parquet(
@@ -69,8 +68,7 @@ fn bench_parquet_loading(c: &mut Criterion) {
                             )
                             .await;
                         black_box(result)
-                    },
-                );
+                    });
             },
         );
     }

@@ -6,7 +6,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{json, Value as JsonValue};
 use yachtsql::{AsyncQueryExecutor, Table};
 
-use super::converters::{arrow_value_to_sql, datatype_to_bq_type, yacht_value_to_json};
+use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_to_json};
 use super::{ExecutorBackend, ExecutorMode};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
@@ -115,8 +115,12 @@ impl YachtSqlExecutor {
                     if col_idx > 0 {
                         batch_buffer.push_str(", ");
                     }
-                    let value = arrow_value_to_sql(col.as_ref(), row_idx, bq_types[col_idx]);
-                    batch_buffer.push_str(&value);
+                    arrow_value_to_sql_into(
+                        col.as_ref(),
+                        row_idx,
+                        bq_types[col_idx],
+                        &mut batch_buffer,
+                    );
                 }
                 batch_buffer.push(')');
                 rows_in_batch += 1;

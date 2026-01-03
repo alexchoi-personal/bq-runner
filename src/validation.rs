@@ -1,13 +1,16 @@
-use crate::config::SecurityConfig;
-use crate::error::{Error, Result};
-use regex::Regex;
-use sqlparser::ast::{Expr, Query, SelectItem, SetExpr, Statement, TableFactor};
-use sqlparser::dialect::BigQueryDialect;
-use sqlparser::parser::Parser;
+use std::borrow::Cow;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+use regex::Regex;
+use sqlparser::ast::{Expr, Query, SelectItem, SetExpr, Statement, TableFactor};
+use sqlparser::dialect::BigQueryDialect;
+use sqlparser::parser::Parser;
+
+use crate::config::SecurityConfig;
+use crate::error::{Error, Result};
 
 pub use crate::config::SecurityConfig as SecurityConfigReexport;
 
@@ -26,8 +29,12 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn quote_identifier(name: &str) -> String {
-    name.replace('`', "``")
+pub fn quote_identifier(name: &str) -> Cow<'_, str> {
+    if name.contains('`') {
+        Cow::Owned(name.replace('`', "``"))
+    } else {
+        Cow::Borrowed(name)
+    }
 }
 
 // SQL Validation using sqlparser AST

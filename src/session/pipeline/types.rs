@@ -97,7 +97,7 @@ impl StreamState {
         self.in_flight.remove(name);
     }
 
-    pub fn ready_tables(&self) -> Vec<String> {
+    pub fn ready_tables(&self) -> Vec<&String> {
         let available_slots = self.max_concurrency.saturating_sub(self.in_flight.len());
         if available_slots == 0 {
             return vec![];
@@ -107,7 +107,6 @@ impl StreamState {
             .keys()
             .filter(|name| self.is_ready(name))
             .take(available_slots)
-            .cloned()
             .collect()
     }
 }
@@ -400,8 +399,8 @@ mod tests {
         );
 
         let ready = state.ready_tables();
-        assert!(ready.contains(&"a".to_string()) || ready.contains(&"b".to_string()));
-        assert!(!ready.contains(&"c".to_string()));
+        assert!(ready.iter().any(|s| s.as_str() == "a") || ready.iter().any(|s| s.as_str() == "b"));
+        assert!(!ready.iter().any(|s| s.as_str() == "c"));
     }
 
     #[test]
