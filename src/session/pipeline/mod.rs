@@ -241,13 +241,7 @@ impl Pipeline {
             Err(_) => DEFAULT_MAX_CONCURRENCY,
         };
 
-        let state = Arc::new(Mutex::new(StreamState {
-            pending_deps,
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency,
-        }));
+        let state = Arc::new(Mutex::new(StreamState::new(pending_deps, max_concurrency)));
 
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(total_count.max(1));
 
@@ -484,7 +478,9 @@ impl Pipeline {
     pub async fn clear(&mut self, executor: &dyn ExecutorBackend) {
         for table_name in self.tables.keys() {
             let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(table_name));
-            let _ = executor.execute_statement(&drop_sql).await;
+            if let Err(e) = executor.execute_statement(&drop_sql).await {
+                tracing::debug!(table = %table_name, error = %e, "Failed to drop table during clear");
+            }
         }
         self.tables.clear();
         self.table_status.clear();
@@ -2058,13 +2054,7 @@ mod tests {
             .map(|name| (name.clone(), HashSet::new()))
             .collect();
 
-        let state = Arc::new(Mutex::new(StreamState {
-            pending_deps,
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: 10,
-        }));
+        let state = Arc::new(Mutex::new(StreamState::new(pending_deps, 10)));
 
         let (tx, mut rx) = mpsc::channel::<(String, Result<()>)>(20);
 

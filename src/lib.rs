@@ -6,7 +6,6 @@ pub mod loader;
 pub mod metrics;
 pub mod rpc;
 pub mod session;
-pub mod utils;
 pub mod validation;
 
 pub use config::{

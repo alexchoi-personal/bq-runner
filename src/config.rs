@@ -89,10 +89,16 @@ pub struct RpcConfig {
     pub rate_limit_per_second: u64,
     #[serde(default = "default_rate_limit_burst")]
     pub rate_limit_burst: u32,
+    #[serde(default = "default_max_sql_length")]
+    pub max_sql_length: usize,
+    #[serde(default = "default_max_rows_per_insert")]
+    pub max_rows_per_insert: usize,
+    #[serde(default = "default_max_ws_message_size")]
+    pub max_ws_message_size: usize,
 }
 
 fn default_request_timeout_secs() -> u64 {
-    300 // 5 minutes
+    300
 }
 
 fn default_rate_limit_per_second() -> u64 {
@@ -103,12 +109,27 @@ fn default_rate_limit_burst() -> u32 {
     200
 }
 
+fn default_max_sql_length() -> usize {
+    1_048_576
+}
+
+fn default_max_rows_per_insert() -> usize {
+    10_000
+}
+
+fn default_max_ws_message_size() -> usize {
+    4 * 1024 * 1024
+}
+
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             request_timeout_secs: default_request_timeout_secs(),
             rate_limit_per_second: default_rate_limit_per_second(),
             rate_limit_burst: default_rate_limit_burst(),
+            max_sql_length: default_max_sql_length(),
+            max_rows_per_insert: default_max_rows_per_insert(),
+            max_ws_message_size: default_max_ws_message_size(),
         }
     }
 }
@@ -398,6 +419,9 @@ audit_enabled = true
         assert_eq!(rc.request_timeout_secs, 300);
         assert_eq!(rc.rate_limit_per_second, 100);
         assert_eq!(rc.rate_limit_burst, 200);
+        assert_eq!(rc.max_sql_length, 1_048_576);
+        assert_eq!(rc.max_rows_per_insert, 10_000);
+        assert_eq!(rc.max_ws_message_size, 4 * 1024 * 1024);
     }
 
     #[test]

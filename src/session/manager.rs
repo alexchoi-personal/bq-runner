@@ -421,7 +421,9 @@ impl SessionManager {
 
         for name in &table_names {
             let drop_sql = format!("DROP TABLE IF EXISTS `{}`", quote_identifier(name));
-            let _ = executor.execute_statement(&drop_sql).await;
+            if let Err(e) = executor.execute_statement(&drop_sql).await {
+                tracing::debug!(table = %name, error = %e, "Failed to drop table during clear_dag");
+            }
         }
 
         self.with_session_mut(session_id, |session| {

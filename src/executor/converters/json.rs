@@ -51,8 +51,8 @@ mod tests {
 
     #[test]
     fn test_number_float() {
-        let val = json!(3.14);
-        assert_eq!(json_to_sql_value(&val), "3.14");
+        let val = json!(1.234);
+        assert_eq!(json_to_sql_value(&val), "1.234");
     }
 
     #[test]

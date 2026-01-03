@@ -113,6 +113,7 @@ struct AppState {
     metrics_handle: PrometheusHandle,
     auth: AuthConfig,
     audit_enabled: bool,
+    max_ws_message_size: usize,
 }
 
 #[tokio::main]
@@ -386,6 +387,13 @@ async fn run_unix_server(
     }
 
     let listener = UnixListener::bind(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     let rate_limit_per_second = config.rpc.rate_limit_per_second;
     let rate_limit_burst = config.rpc.rate_limit_burst;
     info!(
@@ -596,6 +604,7 @@ async fn run_http_server(
         metrics_handle,
         auth: config.auth.clone(),
         audit_enabled: config.logging.audit_enabled,
+        max_ws_message_size: config.rpc.max_ws_message_size,
     };
 
     let rate_limit_per_second = config.rpc.rate_limit_per_second;
@@ -679,9 +688,6 @@ async fn shutdown_signal() {
     }
 }
 
-// Maximum WebSocket message size: 16MB
-const MAX_WS_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
-
 async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -694,7 +700,7 @@ async fn ws_handler(
         )
             .into_response();
     }
-    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+    ws.max_message_size(state.max_ws_message_size)
         .on_upgrade(move |socket| handle_websocket(socket, state.methods))
 }
 

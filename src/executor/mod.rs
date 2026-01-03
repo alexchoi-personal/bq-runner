@@ -168,21 +168,33 @@ mod tests {
     #[tokio::test]
     async fn test_yachtsql_executor_get_projects() {
         let executor = YachtSqlExecutor::new();
+        executor
+            .execute_statement("CREATE TABLE proj.ds.t (id INT64)")
+            .await
+            .unwrap();
         let projects = executor.get_projects();
-        assert!(projects.is_empty() || !projects.is_empty());
+        assert!(projects.contains(&"PROJ".to_string()));
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_get_datasets() {
         let executor = YachtSqlExecutor::new();
-        let datasets = executor.get_datasets("project");
-        assert!(datasets.is_empty() || !datasets.is_empty());
+        executor
+            .execute_statement("CREATE TABLE myproj.myds.t (id INT64)")
+            .await
+            .unwrap();
+        let datasets = executor.get_datasets("myproj");
+        assert!(datasets.contains(&"MYDS".to_string()));
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_get_tables_in_dataset() {
         let executor = YachtSqlExecutor::new();
-        let tables = executor.get_tables_in_dataset("project", "dataset");
-        assert!(tables.is_empty() || !tables.is_empty());
+        executor
+            .execute_statement("CREATE TABLE proj.ds.my_table (id INT64)")
+            .await
+            .unwrap();
+        let tables = executor.get_tables_in_dataset("proj", "ds");
+        assert!(tables.contains(&"MY_TABLE".to_string()));
     }
 }

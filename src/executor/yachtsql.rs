@@ -312,16 +312,14 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::converters::{
-        arrow_value_to_sql, base64_encode, datatype_to_bq_type, yacht_value_to_json,
-    };
+    use super::super::converters::{arrow_value_to_sql, base64_encode, datatype_to_bq_type};
     use super::*;
     use arrow::array::*;
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit};
     use parquet::arrow::ArrowWriter;
     use serde_json::json;
     use std::sync::Arc;
-    use yachtsql::{DataType, Value as YachtValue};
+    use yachtsql::DataType;
 
     #[tokio::test]
     async fn test_yachtsql_executor_new() {

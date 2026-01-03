@@ -22,7 +22,7 @@ fn bench_json_to_sql_simple(c: &mut Criterion) {
     });
 
     group.bench_function("float", |b| {
-        let val = json!(3.14159);
+        let val = json!(1.234);
         b.iter(|| json_to_sql_value(black_box(&val)))
     });
 

@@ -6,9 +6,10 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::config::RpcConfig;
+use crate::domain::ColumnType;
 use crate::error::{Error, Result};
+use crate::executor::converters::json_to_sql_value;
 use crate::session::SessionManager;
-use crate::utils::json_to_sql_value;
 use crate::validation::{quote_identifier, validate_sql_for_query, validate_table_name};
 
 pub trait HasSessionId {
@@ -316,7 +317,13 @@ impl RpcMethods {
         let p: QueryParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
-        // Validate SQL to block DDL statements
+        if p.sql.len() > self.rpc_config.max_sql_length {
+            return Err(Error::InvalidRequest(format!(
+                "SQL query exceeds maximum length of {} bytes",
+                self.rpc_config.max_sql_length
+            )));
+        }
+
         validate_sql_for_query(&p.sql)?;
 
         let result = self
@@ -331,12 +338,16 @@ impl RpcMethods {
         let p: CreateTableParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
-        // Validate table name to prevent SQL injection
         validate_table_name(&p.table_name)?;
 
-        // Validate column names
         for col in &p.schema {
             validate_table_name(&col.name)?;
+            if col.column_type == ColumnType::Unknown {
+                return Err(Error::InvalidRequest(format!(
+                    "Unknown column type for column '{}'",
+                    col.name
+                )));
+            }
         }
 
         let quoted_table = format!("`{}`", quote_identifier(&p.table_name));
@@ -363,6 +374,13 @@ impl RpcMethods {
 
         if p.rows.is_empty() {
             return Ok(json!(InsertResult { inserted_rows: 0 }));
+        }
+
+        if p.rows.len() > self.rpc_config.max_rows_per_insert {
+            return Err(Error::InvalidRequest(format!(
+                "Insert exceeds maximum of {} rows per request",
+                self.rpc_config.max_rows_per_insert
+            )));
         }
 
         // Determine if rows are objects or arrays based on first row

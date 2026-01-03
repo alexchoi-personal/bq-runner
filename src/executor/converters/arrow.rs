@@ -126,7 +126,6 @@ pub(crate) fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_arrow_value_to_sql_null() {
@@ -167,8 +166,8 @@ mod tests {
 
     #[test]
     fn test_arrow_value_to_sql_float64() {
-        let arr = Float64Array::from(vec![Some(3.14)]);
-        assert_eq!(arrow_value_to_sql(&arr, 0, "FLOAT64"), "3.14");
+        let arr = Float64Array::from(vec![Some(1.234)]);
+        assert_eq!(arrow_value_to_sql(&arr, 0, "FLOAT64"), "1.234");
     }
 
     #[test]

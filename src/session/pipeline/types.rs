@@ -41,9 +41,30 @@ pub(super) struct StreamState {
     pub blocked: HashSet<String>,
     pub in_flight: HashSet<String>,
     pub max_concurrency: usize,
+    reverse_deps: HashMap<String, Vec<String>>,
 }
 
 impl StreamState {
+    pub fn new(pending_deps: HashMap<String, HashSet<String>>, max_concurrency: usize) -> Self {
+        let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
+        for (table, deps) in &pending_deps {
+            for dep in deps {
+                reverse_deps
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(table.clone());
+            }
+        }
+        Self {
+            pending_deps,
+            completed: HashSet::new(),
+            blocked: HashSet::new(),
+            in_flight: HashSet::new(),
+            max_concurrency,
+            reverse_deps,
+        }
+    }
+
     pub fn is_pending(&self, name: &str) -> bool {
         !self.completed.contains(name)
             && !self.blocked.contains(name)
@@ -60,8 +81,12 @@ impl StreamState {
 
     pub fn mark_completed(&mut self, name: &str) {
         self.completed.insert(name.to_string());
-        for deps in self.pending_deps.values_mut() {
-            deps.remove(name);
+        if let Some(dependents) = self.reverse_deps.get(name) {
+            for dependent in dependents {
+                if let Some(deps) = self.pending_deps.get_mut(dependent) {
+                    deps.remove(name);
+                }
+            }
         }
     }
 
@@ -241,101 +266,77 @@ mod tests {
 
     #[test]
     fn test_stream_state_is_pending() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
         assert!(state.is_pending("a"));
         assert!(state.is_pending("nonexistent"));
     }
 
     #[test]
     fn test_stream_state_is_pending_false_when_completed() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::from(["a".to_string()]),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
+        state.mark_completed("a");
         assert!(!state.is_pending("a"));
     }
 
     #[test]
     fn test_stream_state_is_pending_false_when_blocked() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::from(["a".to_string()]),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
+        state.mark_blocked("a");
         assert!(!state.is_pending("a"));
     }
 
     #[test]
     fn test_stream_state_is_pending_false_when_in_flight() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::from(["a".to_string()]),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
+        state.mark_in_flight("a");
         assert!(!state.is_pending("a"));
     }
 
     #[test]
     fn test_stream_state_is_ready_true() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
         assert!(state.is_ready("a"));
     }
 
     #[test]
     fn test_stream_state_is_ready_false_has_deps() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::from(["b".to_string()]))]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::from(["b".to_string()]))]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
         assert!(!state.is_ready("a"));
     }
 
     #[test]
     fn test_stream_state_is_ready_false_not_in_pending() {
-        let state = StreamState {
-            pending_deps: HashMap::new(),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let state = StreamState::new(HashMap::new(), DEFAULT_MAX_CONCURRENCY);
         assert!(!state.is_ready("a"));
     }
 
     #[test]
     fn test_stream_state_mark_completed() {
-        let mut state = StreamState {
-            pending_deps: HashMap::from([
+        let mut state = StreamState::new(
+            HashMap::from([
                 ("a".to_string(), HashSet::new()),
                 ("b".to_string(), HashSet::from(["a".to_string()])),
             ]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+            DEFAULT_MAX_CONCURRENCY,
+        );
 
         state.mark_completed("a");
 
@@ -345,13 +346,10 @@ mod tests {
 
     #[test]
     fn test_stream_state_mark_blocked() {
-        let mut state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
 
         state.mark_blocked("a");
 
@@ -361,13 +359,10 @@ mod tests {
 
     #[test]
     fn test_stream_state_mark_in_flight() {
-        let mut state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
 
         state.mark_in_flight("a");
 
@@ -377,13 +372,11 @@ mod tests {
 
     #[test]
     fn test_stream_state_finish_in_flight() {
-        let mut state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::from(["a".to_string()]),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+        let mut state = StreamState::new(
+            HashMap::from([("a".to_string(), HashSet::new())]),
+            DEFAULT_MAX_CONCURRENCY,
+        );
+        state.mark_in_flight("a");
 
         state.finish_in_flight("a");
 
@@ -392,13 +385,9 @@ mod tests {
 
     #[test]
     fn test_stream_state_ready_tables_empty_when_at_capacity() {
-        let state = StreamState {
-            pending_deps: HashMap::from([("a".to_string(), HashSet::new())]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::from(["b".to_string(), "c".to_string()]),
-            max_concurrency: 2,
-        };
+        let mut state = StreamState::new(HashMap::from([("a".to_string(), HashSet::new())]), 2);
+        state.mark_in_flight("b");
+        state.mark_in_flight("c");
 
         let ready = state.ready_tables();
         assert!(ready.is_empty());
@@ -406,17 +395,14 @@ mod tests {
 
     #[test]
     fn test_stream_state_ready_tables_returns_ready() {
-        let state = StreamState {
-            pending_deps: HashMap::from([
+        let state = StreamState::new(
+            HashMap::from([
                 ("a".to_string(), HashSet::new()),
                 ("b".to_string(), HashSet::new()),
                 ("c".to_string(), HashSet::from(["a".to_string()])),
             ]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
-        };
+            DEFAULT_MAX_CONCURRENCY,
+        );
 
         let ready = state.ready_tables();
         assert!(ready.contains(&"a".to_string()) || ready.contains(&"b".to_string()));
@@ -425,17 +411,14 @@ mod tests {
 
     #[test]
     fn test_stream_state_ready_tables_respects_concurrency() {
-        let state = StreamState {
-            pending_deps: HashMap::from([
+        let state = StreamState::new(
+            HashMap::from([
                 ("a".to_string(), HashSet::new()),
                 ("b".to_string(), HashSet::new()),
                 ("c".to_string(), HashSet::new()),
             ]),
-            completed: HashSet::new(),
-            blocked: HashSet::new(),
-            in_flight: HashSet::new(),
-            max_concurrency: 2,
-        };
+            2,
+        );
 
         let ready = state.ready_tables();
         assert!(ready.len() <= 2);

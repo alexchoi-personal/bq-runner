@@ -1,8 +1,8 @@
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::executor::converters::json_to_sql_value;
 use crate::executor::ExecutorBackend;
-use crate::utils::json_to_sql_value;
 use crate::validation::quote_identifier;
 
 use super::types::PipelineTable;
@@ -13,7 +13,9 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
     } else if let Some(sql) = &table.sql {
         let quoted_name = format!("`{}`", quote_identifier(&table.name));
         let drop_sql = format!("DROP TABLE IF EXISTS {}", quoted_name);
-        let _ = executor.execute_statement(&drop_sql).await;
+        if let Err(e) = executor.execute_statement(&drop_sql).await {
+            tracing::debug!(table = %table.name, error = %e, "Failed to drop table before recreation");
+        }
 
         let query_result = executor.execute_query(sql).await.map_err(|e| {
             Error::Executor(format!(
@@ -287,7 +289,7 @@ mod tests {
                 ColumnDef::bool("bool_col"),
             ],
             vec![
-                json!([42, 3.14, "hello", true]),
+                json!([42, 1.234, "hello", true]),
                 json!([null, null, null, false]),
             ],
         );

@@ -11,8 +11,10 @@ use std::sync::LazyLock;
 
 pub use crate::config::SecurityConfig as SecurityConfigReexport;
 
-static TABLE_NAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$").unwrap());
+static TABLE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+        .expect("TABLE_NAME_REGEX pattern is valid")
+});
 
 pub fn validate_table_name(name: &str) -> Result<()> {
     if name.len() > 128 || !TABLE_NAME_REGEX.is_match(name) {
