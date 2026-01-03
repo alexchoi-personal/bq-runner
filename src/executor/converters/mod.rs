@@ -6,6 +6,7 @@ use std::borrow::Cow;
 
 pub(crate) use arrow::arrow_value_to_sql;
 pub use json::json_to_sql_value;
+pub(crate) use json::json_to_sql_value_into;
 pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_to_json};
 
 fn escape_sql_string(s: &str) -> Cow<'_, str> {
@@ -28,6 +29,17 @@ fn escape_sql_string(s: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(result)
+}
+
+fn escape_sql_string_into(s: &str, buf: &mut String) {
+    for c in s.chars() {
+        match c {
+            '\'' => buf.push_str("''"),
+            '\\' => buf.push_str("\\\\"),
+            '\0' => buf.push_str("\\0"),
+            _ => buf.push(c),
+        }
+    }
 }
 
 #[cfg(test)]

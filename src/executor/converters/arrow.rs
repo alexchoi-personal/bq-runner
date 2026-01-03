@@ -37,10 +37,12 @@ pub(crate) fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -
         ArrowDataType::Int64 => {
             let arr = downcast_or_null!(array, Int64Array);
             let val = arr.value(row);
-            match bq_type.to_uppercase().as_str() {
-                "DATE" => format!("DATE_FROM_UNIX_DATE({})", val),
-                "TIMESTAMP" => format!("TIMESTAMP_MICROS({})", val),
-                _ => val.to_string(),
+            if bq_type.eq_ignore_ascii_case("DATE") {
+                format!("DATE_FROM_UNIX_DATE({})", val)
+            } else if bq_type.eq_ignore_ascii_case("TIMESTAMP") {
+                format!("TIMESTAMP_MICROS({})", val)
+            } else {
+                val.to_string()
             }
         }
         ArrowDataType::UInt8 => {

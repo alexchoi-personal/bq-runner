@@ -61,11 +61,17 @@ fn parse_insert_rows(rows: &[Value]) -> Result<ParsedRows> {
             .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
         let cols: Vec<String> = first_obj.keys().cloned().collect();
         let mut vals: Vec<String> = Vec::with_capacity(rows.len());
-        for row in rows {
+        for (row_idx, row) in rows.iter().enumerate() {
             let obj = row
                 .as_object()
                 .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
-            let row_vals: Vec<String> = cols.iter().map(|k| json_to_sql_value(&obj[k])).collect();
+            let mut row_vals: Vec<String> = Vec::with_capacity(cols.len());
+            for col in &cols {
+                let val = obj.get(col).ok_or_else(|| {
+                    Error::InvalidRequest(format!("Row {} is missing column '{}'", row_idx, col))
+                })?;
+                row_vals.push(json_to_sql_value(val));
+            }
             vals.push(format!("({})", row_vals.join(", ")));
         }
         (Some(cols), vals)

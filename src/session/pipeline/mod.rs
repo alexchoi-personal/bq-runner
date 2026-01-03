@@ -44,13 +44,20 @@ impl Pipeline {
     }
 
     pub fn register(&mut self, defs: Vec<DagTableDef>) -> Result<Vec<DagTableInfo>> {
-        let new_names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+        let count = defs.len();
+        self.tables.reserve(count);
+        self.table_status.reserve(count);
+        self.table_name_lookup.reserve(count);
 
-        let mut temp_tables: HashMap<String, PipelineTable> = HashMap::new();
+        let mut temp_tables: HashMap<String, PipelineTable> = HashMap::with_capacity(count);
+        let mut new_names: Vec<String> = Vec::with_capacity(count);
+
         for def in defs {
             let is_source = def.sql.is_none();
+            let name = def.name;
+            new_names.push(name.clone());
             let table = PipelineTable {
-                name: def.name.clone(),
+                name: name.clone(),
                 sql: def.sql,
                 schema: def.schema,
                 rows: def.rows,
@@ -58,21 +65,16 @@ impl Pipeline {
                 is_source,
             };
             self.table_name_lookup
-                .insert(table.name.to_uppercase(), table.name.clone());
-            temp_tables.insert(table.name.clone(), table);
-            self.table_status
-                .insert(def.name.clone(), TableStatus::Pending);
+                .insert(name.to_uppercase(), name.clone());
+            self.table_status.insert(name.clone(), TableStatus::Pending);
+            temp_tables.insert(name, table);
         }
 
         for name in &new_names {
-            let deps = if let Some(table) = temp_tables.get(name) {
-                table
-                    .sql
-                    .as_ref()
-                    .map(|sql| extract_dependencies(sql, &self.table_name_lookup))
-            } else {
-                None
-            };
+            let deps = temp_tables
+                .get(name)
+                .and_then(|t| t.sql.as_ref())
+                .map(|sql| extract_dependencies(sql, &self.table_name_lookup));
             if let Some(deps) = deps {
                 if let Some(table) = temp_tables.get_mut(name) {
                     table.dependencies = deps;
@@ -80,21 +82,16 @@ impl Pipeline {
             }
         }
 
+        let mut infos = Vec::with_capacity(count);
         for (name, table) in temp_tables {
+            infos.push(DagTableInfo {
+                name: table.name.clone(),
+                dependencies: table.dependencies.clone(),
+            });
             self.tables.insert(name, Arc::new(table));
         }
 
         self.detect_cycles(&new_names)?;
-
-        let infos = new_names
-            .iter()
-            .filter_map(|name| {
-                self.tables.get(name).map(|table| DagTableInfo {
-                    name: table.name.clone(),
-                    dependencies: table.dependencies.clone(),
-                })
-            })
-            .collect();
 
         Ok(infos)
     }
