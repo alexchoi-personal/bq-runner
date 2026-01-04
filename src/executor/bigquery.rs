@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use google_cloud_bigquery::client::{Client, ClientConfig};
 use google_cloud_bigquery::http::job::cancel::CancelJobRequest;
@@ -16,6 +18,12 @@ use super::yachtsql::ColumnInfo;
 use super::{ExecutorBackend, ExecutorMode, QueryResult};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+
+const JOB_POLL_INITIAL_INTERVAL_SECS: u64 = 1;
+const JOB_POLL_MAX_INTERVAL_SECS: u64 = 30;
+const JOB_TIMEOUT_SECS: u64 = 1800;
+const CANCELLATION_VERIFICATION_DELAY_SECS: u64 = 1;
+const CANCELLATION_VERIFICATION_RETRIES: u8 = 3;
 
 pub struct BigQueryExecutor {
     client: Client,
@@ -163,9 +171,9 @@ impl BigQueryExecutor {
         }
 
         let start = std::time::Instant::now();
-        let mut interval = std::time::Duration::from_secs(1);
-        let max_interval = std::time::Duration::from_secs(30);
-        let timeout = std::time::Duration::from_secs(1800);
+        let mut interval = Duration::from_secs(JOB_POLL_INITIAL_INTERVAL_SECS);
+        let max_interval = Duration::from_secs(JOB_POLL_MAX_INTERVAL_SECS);
+        let timeout = Duration::from_secs(JOB_TIMEOUT_SECS);
         let deadline = start + timeout;
         let mut poll_count = 0u32;
 
@@ -192,8 +200,11 @@ impl BigQueryExecutor {
                 if let Err(e) = self.cancel_job(job_id).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Cancellation failed");
                 } else {
-                    for retry in 1..=3 {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    for retry in 1..=CANCELLATION_VERIFICATION_RETRIES {
+                        tokio::time::sleep(Duration::from_secs(
+                            CANCELLATION_VERIFICATION_DELAY_SECS,
+                        ))
+                        .await;
                         let get_request = GetJobRequest { location: None };
                         match self
                             .client
@@ -205,7 +216,7 @@ impl BigQueryExecutor {
                                 tracing::info!(job_id = %job_id, "Job confirmed cancelled/completed");
                                 break;
                             }
-                            Ok(_) if retry == 3 => {
+                            Ok(_) if retry == CANCELLATION_VERIFICATION_RETRIES => {
                                 tracing::error!(job_id = %job_id, "Job still running after cancellation");
                             }
                             Err(_) => break,

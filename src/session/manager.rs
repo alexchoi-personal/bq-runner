@@ -162,49 +162,18 @@ impl SessionManager {
         let timeout = Duration::from_secs(self.session_config.session_timeout_secs);
         let now = Instant::now();
 
-        let expired_ids: Vec<Uuid> = {
-            let sessions = self.sessions.read();
-            sessions
-                .iter()
-                .filter_map(|(id, session)| {
-                    if now.duration_since(session.last_accessed()) > timeout {
-                        Some(*id)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        if expired_ids.is_empty() {
-            return 0;
-        }
-
-        let ids_to_remove: Vec<Uuid> = {
-            let sessions = self.sessions.read();
-            expired_ids
-                .into_iter()
-                .filter(|id| {
-                    sessions
-                        .get(id)
-                        .is_some_and(|s| now.duration_since(s.last_accessed()) > timeout)
-                })
-                .collect()
-        };
-
-        if ids_to_remove.is_empty() {
-            return 0;
-        }
-
         let mut sessions = self.sessions.write();
-        let mut removed = 0;
-        for id in ids_to_remove {
-            if sessions.remove(&id).is_some() {
-                debug!(session_id = %id, "Session expired and removed");
-                removed += 1;
-            }
-        }
+        let initial_len = sessions.len();
 
+        sessions.retain(|id, session| {
+            let expired = now.duration_since(session.last_accessed()) > timeout;
+            if expired {
+                debug!(session_id = %id, "Session expired and removed");
+            }
+            !expired
+        });
+
+        let removed = initial_len - sessions.len();
         if removed > 0 {
             info!(
                 removed = removed,

@@ -206,6 +206,12 @@ impl RpcMethods {
     async fn define_table(&self, params: Value) -> Result<Value> {
         let p: DefineTableParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
+        if p.sql.len() > self.rpc_config.max_sql_length {
+            return Err(Error::InvalidRequest(format!(
+                "SQL exceeds maximum length of {} bytes",
+                self.rpc_config.max_sql_length
+            )));
+        }
         let deps = self
             .session_manager
             .define_table(session_id, &p.name, &p.sql)?;
@@ -218,6 +224,14 @@ impl RpcMethods {
     async fn define_tables(&self, params: Value) -> Result<Value> {
         let p: DefineTablesParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
+        for t in &p.tables {
+            if t.sql.len() > self.rpc_config.max_sql_length {
+                return Err(Error::InvalidRequest(format!(
+                    "SQL for table '{}' exceeds maximum length of {} bytes",
+                    t.name, self.rpc_config.max_sql_length
+                )));
+            }
+        }
         let mut results = Vec::new();
         for t in &p.tables {
             let deps = self
@@ -403,6 +417,17 @@ impl RpcMethods {
     async fn register_dag(&self, params: Value) -> Result<Value> {
         let p: RegisterDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
+
+        for table in &p.tables {
+            if let Some(ref sql) = table.sql {
+                if sql.len() > self.rpc_config.max_sql_length {
+                    return Err(Error::InvalidRequest(format!(
+                        "SQL for table '{}' exceeds maximum length of {} bytes",
+                        table.name, self.rpc_config.max_sql_length
+                    )));
+                }
+            }
+        }
 
         let table_infos = self.session_manager.register_dag(session_id, p.tables)?;
 
