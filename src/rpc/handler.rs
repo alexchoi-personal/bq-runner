@@ -64,19 +64,22 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
         return RpcResponse::invalid_request();
     }
 
-    let session_id = extract_session_id(&request.params);
-    let RpcRequest {
-        id, method, params, ..
-    } = request;
-    let id = id.unwrap_or(Value::Null);
-
     let start = Instant::now();
     let audit_enabled = methods.audit_enabled();
+    let session_id = if audit_enabled {
+        extract_session_id(&request.params)
+    } else {
+        None
+    };
     let request_id = if audit_enabled {
         Some(uuid::Uuid::new_v4().to_string())
     } else {
         None
     };
+    let RpcRequest {
+        id, method, params, ..
+    } = request;
+    let id = id.unwrap_or(Value::Null);
 
     record_rpc_request(&method);
 

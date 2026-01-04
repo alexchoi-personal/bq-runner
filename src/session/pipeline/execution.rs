@@ -114,8 +114,8 @@ async fn insert_rows_batched(
         if rows_in_batch >= INSERT_BATCH_SIZE {
             executor.execute_statement(&sql_buffer).await.map_err(|e| {
                 Error::Executor(format!(
-                    "Batch insert failed after {} rows successfully inserted: {}",
-                    total_rows_inserted, e
+                    "Batch insert failed ({} rows in batch) after {} rows committed: {}",
+                    rows_in_batch, total_rows_inserted, e
                 ))
             })?;
             total_rows_inserted += rows_in_batch;
@@ -127,8 +127,8 @@ async fn insert_rows_batched(
     if rows_in_batch > 0 {
         executor.execute_statement(&sql_buffer).await.map_err(|e| {
             Error::Executor(format!(
-                "Batch insert failed after {} rows successfully inserted: {}",
-                total_rows_inserted, e
+                "Batch insert failed ({} rows in batch) after {} rows committed: {}",
+                rows_in_batch, total_rows_inserted, e
             ))
         })?;
     }
