@@ -1,7 +1,17 @@
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tracing::warn;
+
+fn env_override<T: FromStr>(target: &mut T, env_var: &str) {
+    if let Ok(val) = std::env::var(env_var) {
+        match val.parse() {
+            Ok(n) => *target = n,
+            Err(_) => warn!("Invalid {} value '{}', using default", env_var, val),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -210,66 +220,28 @@ impl Config {
                 _ => LogFormat::Text,
             };
         }
-        if let Ok(val) = std::env::var("BQ_RUNNER_MAX_SESSIONS") {
-            match val.parse() {
-                Ok(n) => config.session.max_sessions = n,
-                Err(_) => warn!(
-                    "Invalid BQ_RUNNER_MAX_SESSIONS value '{}', using default",
-                    val
-                ),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_RUNNER_SESSION_TIMEOUT_SECS") {
-            match val.parse() {
-                Ok(n) => config.session.session_timeout_secs = n,
-                Err(_) => warn!(
-                    "Invalid BQ_RUNNER_SESSION_TIMEOUT_SECS value '{}', using default",
-                    val
-                ),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_MAX_CONCURRENCY") {
-            match val.parse() {
-                Ok(n) => config.session.max_concurrency = n,
-                Err(_) => warn!("Invalid BQ_MAX_CONCURRENCY value '{}', using default", val),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_TABLE_TIMEOUT_SECS") {
-            match val.parse() {
-                Ok(n) => config.session.table_timeout_secs = n,
-                Err(_) => warn!(
-                    "Invalid BQ_TABLE_TIMEOUT_SECS value '{}', using default",
-                    val
-                ),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_RUNNER_REQUEST_TIMEOUT_SECS") {
-            match val.parse() {
-                Ok(n) => config.rpc.request_timeout_secs = n,
-                Err(_) => warn!(
-                    "Invalid BQ_RUNNER_REQUEST_TIMEOUT_SECS value '{}', using default",
-                    val
-                ),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_PER_SECOND") {
-            match val.parse() {
-                Ok(n) => config.rpc.rate_limit_per_second = n,
-                Err(_) => warn!(
-                    "Invalid BQ_RUNNER_RATE_LIMIT_PER_SECOND value '{}', using default",
-                    val
-                ),
-            }
-        }
-        if let Ok(val) = std::env::var("BQ_RUNNER_RATE_LIMIT_BURST") {
-            match val.parse() {
-                Ok(n) => config.rpc.rate_limit_burst = n,
-                Err(_) => warn!(
-                    "Invalid BQ_RUNNER_RATE_LIMIT_BURST value '{}', using default",
-                    val
-                ),
-            }
-        }
+        env_override(&mut config.session.max_sessions, "BQ_RUNNER_MAX_SESSIONS");
+        env_override(
+            &mut config.session.session_timeout_secs,
+            "BQ_RUNNER_SESSION_TIMEOUT_SECS",
+        );
+        env_override(&mut config.session.max_concurrency, "BQ_MAX_CONCURRENCY");
+        env_override(
+            &mut config.session.table_timeout_secs,
+            "BQ_TABLE_TIMEOUT_SECS",
+        );
+        env_override(
+            &mut config.rpc.request_timeout_secs,
+            "BQ_RUNNER_REQUEST_TIMEOUT_SECS",
+        );
+        env_override(
+            &mut config.rpc.rate_limit_per_second,
+            "BQ_RUNNER_RATE_LIMIT_PER_SECOND",
+        );
+        env_override(
+            &mut config.rpc.rate_limit_burst,
+            "BQ_RUNNER_RATE_LIMIT_BURST",
+        );
         if let Ok(val) = std::env::var("BQ_RUNNER_API_KEY") {
             config.auth.api_key = Some(val);
             config.auth.enabled = true;

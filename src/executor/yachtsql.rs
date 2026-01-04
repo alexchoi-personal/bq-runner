@@ -72,7 +72,15 @@ impl YachtSqlExecutor {
                 continue;
             }
 
-            let num_cols = schema.len().min(batch.num_columns());
+            if schema.len() != batch.num_columns() {
+                return Err(Error::Executor(format!(
+                    "Schema has {} columns but parquet batch has {} columns",
+                    schema.len(),
+                    batch.num_columns()
+                )));
+            }
+
+            let num_cols = schema.len();
             let columns: Vec<_> = (0..num_cols).map(|i| batch.column(i)).collect();
             let bq_types: Vec<_> = schema
                 .iter()
