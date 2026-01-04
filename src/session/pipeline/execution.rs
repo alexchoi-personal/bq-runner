@@ -26,8 +26,16 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
     if table.is_source {
         create_source_table_standalone(executor, table).await?;
     } else if let Some(sql) = &table.sql {
-        let quoted_name = format!("`{}`", quote_identifier(&table.name));
-        let drop_sql = format!("DROP TABLE IF EXISTS {}", quoted_name);
+        let quoted_identifier = quote_identifier(&table.name);
+        let quoted_name_len = quoted_identifier.len() + 2;
+        let mut quoted_name = String::with_capacity(quoted_name_len);
+        quoted_name.push('`');
+        quoted_name.push_str(&quoted_identifier);
+        quoted_name.push('`');
+
+        let mut drop_sql = String::with_capacity(21 + quoted_name_len);
+        drop_sql.push_str("DROP TABLE IF EXISTS ");
+        drop_sql.push_str(&quoted_name);
         if let Err(e) = executor.execute_statement(&drop_sql).await {
             tracing::warn!(table = %table.name, error = %e, "Failed to drop table before recreation");
         }
@@ -40,13 +48,25 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
         })?;
 
         if !query_result.columns.is_empty() {
-            let column_types: Vec<String> = query_result
+            let col_defs_len: usize = query_result
                 .columns
                 .iter()
-                .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.data_type))
-                .collect();
-
-            let create_sql = format!("CREATE TABLE {} ({})", quoted_name, column_types.join(", "));
+                .map(|col| col.name.len() + col.data_type.len() + 5)
+                .sum();
+            let mut create_sql = String::with_capacity(15 + quoted_name_len + col_defs_len);
+            create_sql.push_str("CREATE TABLE ");
+            create_sql.push_str(&quoted_name);
+            create_sql.push_str(" (");
+            for (i, col) in query_result.columns.iter().enumerate() {
+                if i > 0 {
+                    create_sql.push_str(", ");
+                }
+                create_sql.push('`');
+                create_sql.push_str(&quote_identifier(&col.name));
+                create_sql.push_str("` ");
+                create_sql.push_str(&col.data_type);
+            }
+            create_sql.push(')');
             executor.execute_statement(&create_sql).await?;
 
             if !query_result.rows.is_empty() {

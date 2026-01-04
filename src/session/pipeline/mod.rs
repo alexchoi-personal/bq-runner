@@ -75,9 +75,19 @@ impl Pipeline {
                 .get(name)
                 .and_then(|t| t.sql.as_ref())
                 .map(|sql| extract_dependencies(sql, &self.table_name_lookup));
-            if let Some(deps) = deps {
-                if let Some(table) = temp_tables.get_mut(name) {
-                    table.dependencies = deps;
+            if let Some(maybe_deps) = deps {
+                match maybe_deps {
+                    Some(deps) => {
+                        if let Some(table) = temp_tables.get_mut(name) {
+                            table.dependencies = deps;
+                        }
+                    }
+                    None => {
+                        return Err(Error::InvalidRequest(format!(
+                            "Failed to parse SQL for table '{}': unable to extract dependencies",
+                            name
+                        )));
+                    }
                 }
             }
         }
@@ -232,21 +242,21 @@ impl Pipeline {
         let all_tables: Vec<String> = subset.into_iter().collect();
         let total_count = all_tables.len();
 
-        let pending_deps: HashMap<String, HashSet<String>> = all_tables
-            .iter()
-            .map(|name| {
-                let deps: HashSet<String> = self
-                    .tables
-                    .get(name)
-                    .map(|t| t.dependencies.iter().cloned().collect())
-                    .unwrap_or_default();
-                let relevant_deps: HashSet<String> = deps
-                    .into_iter()
-                    .filter(|d| all_tables.contains(d))
-                    .collect();
-                (name.clone(), relevant_deps)
-            })
-            .collect();
+        let mut pending_deps: HashMap<String, HashSet<String>> =
+            HashMap::with_capacity(all_tables.len());
+        for name in &all_tables {
+            let table_deps = self.tables.get(name).map(|t| &t.dependencies);
+            let dep_count = table_deps.map(|d| d.len()).unwrap_or(0);
+            let mut relevant_deps = HashSet::with_capacity(dep_count);
+            if let Some(deps) = table_deps {
+                for d in deps {
+                    if all_tables.contains(d) {
+                        relevant_deps.insert(d.clone());
+                    }
+                }
+            }
+            pending_deps.insert(name.clone(), relevant_deps);
+        }
 
         let state = Arc::new(Mutex::new(StreamState::new(
             pending_deps,
@@ -462,7 +472,13 @@ impl Pipeline {
     pub fn register_table(&mut self, name: &str, sql: &str) -> Result<Vec<String>> {
         self.table_name_lookup
             .insert(name.to_uppercase(), name.to_string());
-        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup);
+        let deps =
+            dependency::extract_dependencies(sql, &self.table_name_lookup).ok_or_else(|| {
+                Error::InvalidRequest(format!(
+                    "Failed to parse SQL for table '{}': unable to extract dependencies",
+                    name
+                ))
+            })?;
         let table = PipelineTable {
             name: name.to_string(),
             sql: Some(sql.to_string()),

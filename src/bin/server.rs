@@ -403,7 +403,17 @@ async fn run_unix_server(
         rate_limit_burst
     );
 
-    let rps = match NonZeroU32::new(rate_limit_per_second as u32) {
+    let rps_value = if rate_limit_per_second > u64::from(u32::MAX) {
+        tracing::warn!(
+            "rate_limit_per_second {} exceeds u32::MAX, clamping to {}",
+            rate_limit_per_second,
+            u32::MAX
+        );
+        u32::MAX
+    } else {
+        rate_limit_per_second as u32
+    };
+    let rps = match NonZeroU32::new(rps_value) {
         Some(v) => v,
         None => {
             tracing::warn!("rate_limit_per_second is 0, defaulting to 100");

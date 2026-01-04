@@ -59,30 +59,34 @@ pub fn yacht_value_into_json(value: YachtValue) -> JsonValue {
 }
 
 pub fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let encoded_len = data.len().div_ceil(3) * 4;
     let mut result = String::with_capacity(encoded_len);
+    base64_encode_into(data, &mut result);
+    result
+}
+
+pub(crate) fn base64_encode_into(data: &[u8], buf: &mut String) {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
         let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
         let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
 
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+        buf.push(ALPHABET[b0 >> 2] as char);
+        buf.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
 
         if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+            buf.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
         } else {
-            result.push('=');
+            buf.push('=');
         }
 
         if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3f] as char);
+            buf.push(ALPHABET[b2 & 0x3f] as char);
         } else {
-            result.push('=');
+            buf.push('=');
         }
     }
-    result
 }
 
 #[cfg(test)]

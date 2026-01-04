@@ -74,16 +74,22 @@ impl YachtSqlExecutor {
         });
 
         let quoted_table = format!("`{}`", quote_identifier(table_name));
-        let columns: Vec<String> = schema
+        let col_defs_len: usize = schema
             .iter()
-            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
-            .collect();
+            .map(|col| col.name.len() + col.column_type.as_str().len() + 5)
+            .sum();
+        let mut columns_str = String::with_capacity(col_defs_len);
+        for (i, col) in schema.iter().enumerate() {
+            if i > 0 {
+                columns_str.push_str(", ");
+            }
+            columns_str.push('`');
+            columns_str.push_str(&quote_identifier(&col.name));
+            columns_str.push_str("` ");
+            columns_str.push_str(col.column_type.as_str());
+        }
 
-        let create_sql = format!(
-            "CREATE OR REPLACE TABLE {} ({})",
-            quoted_table,
-            columns.join(", ")
-        );
+        let create_sql = format!("CREATE OR REPLACE TABLE {} ({})", quoted_table, columns_str);
 
         self.executor
             .execute_sql(&create_sql)
@@ -362,6 +368,7 @@ impl QueryResult {
 
 fn table_to_query_result(table: &Table) -> Result<QueryResult> {
     let schema = table.schema();
+    let num_columns = schema.fields().len();
     let columns: Vec<ColumnInfo> = schema
         .fields()
         .iter()
@@ -374,16 +381,15 @@ fn table_to_query_result(table: &Table) -> Result<QueryResult> {
     let records = table
         .to_records()
         .map_err(|e| Error::Executor(e.to_string()))?;
-    let rows: Vec<Vec<JsonValue>> = records
-        .into_iter()
-        .map(|record| {
-            record
-                .into_values()
-                .into_iter()
-                .map(yacht_value_into_json)
-                .collect()
-        })
-        .collect();
+    let mut rows: Vec<Vec<JsonValue>> = Vec::with_capacity(records.len());
+    for record in records {
+        let values = record.into_values();
+        let mut row = Vec::with_capacity(num_columns);
+        for value in values {
+            row.push(yacht_value_into_json(value));
+        }
+        rows.push(row);
+    }
 
     Ok(QueryResult { columns, rows })
 }

@@ -89,10 +89,13 @@ fn parse_sql_cached(sql: &str) -> Option<Arc<Vec<Statement>>> {
     Some(statements)
 }
 
-pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, String>) -> Vec<String> {
+pub fn extract_dependencies(
+    sql: &str,
+    table_name_lookup: &HashMap<String, String>,
+) -> Option<Vec<String>> {
     let Some(statements) = parse_sql_cached(sql) else {
         tracing::warn!(sql_prefix = %sql.chars().take(100).collect::<String>(), "Failed to parse SQL for dependency extraction");
-        return vec![];
+        return None;
     };
 
     let mut cte_names = HashSet::new();
@@ -118,7 +121,7 @@ pub fn extract_dependencies(sql: &str, table_name_lookup: &HashMap<String, Strin
 
     deps.sort();
     deps.dedup();
-    deps
+    Some(deps)
 }
 
 #[cfg(test)]
@@ -291,28 +294,28 @@ mod tests {
     #[test]
     fn test_extract_dependencies_empty_sql() {
         let lookup = HashMap::new();
-        let deps = extract_dependencies("SELECT 1", &lookup);
+        let deps = extract_dependencies("SELECT 1", &lookup).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_extract_dependencies_no_known_tables() {
         let lookup = HashMap::new();
-        let deps = extract_dependencies("SELECT * FROM users", &lookup);
+        let deps = extract_dependencies("SELECT * FROM users", &lookup).unwrap();
         assert!(deps.is_empty());
     }
 
     #[test]
     fn test_extract_dependencies_single_from() {
         let lookup = make_lookup(&["users"]);
-        let deps = extract_dependencies("SELECT * FROM users", &lookup);
+        let deps = extract_dependencies("SELECT * FROM users", &lookup).unwrap();
         assert_eq!(deps, vec!["users"]);
     }
 
     #[test]
     fn test_extract_dependencies_case_insensitive() {
         let lookup = make_lookup(&["Users"]);
-        let deps = extract_dependencies("SELECT * FROM USERS", &lookup);
+        let deps = extract_dependencies("SELECT * FROM USERS", &lookup).unwrap();
         assert_eq!(deps, vec!["Users"]);
     }
 
@@ -322,7 +325,8 @@ mod tests {
         let deps = extract_dependencies(
             "SELECT * FROM users JOIN orders ON users.id = orders.user_id",
             &lookup,
-        );
+        )
+        .unwrap();
         assert!(deps.contains(&"users".to_string()));
         assert!(deps.contains(&"orders".to_string()));
     }
@@ -330,7 +334,7 @@ mod tests {
     #[test]
     fn test_extract_dependencies_comma_syntax() {
         let lookup = make_lookup(&["a", "b"]);
-        let deps = extract_dependencies("SELECT * FROM a, b WHERE a.id = b.id", &lookup);
+        let deps = extract_dependencies("SELECT * FROM a, b WHERE a.id = b.id", &lookup).unwrap();
         assert!(deps.contains(&"a".to_string()));
         assert!(deps.contains(&"b".to_string()));
     }
@@ -339,7 +343,7 @@ mod tests {
     fn test_extract_dependencies_excludes_cte_names() {
         let lookup = make_lookup(&["temp", "users"]);
         let sql = "WITH temp AS (SELECT * FROM users) SELECT * FROM temp";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert_eq!(deps, vec!["users"]);
         assert!(!deps.contains(&"temp".to_string()));
     }
@@ -348,7 +352,7 @@ mod tests {
     fn test_extract_dependencies_no_duplicates() {
         let lookup = make_lookup(&["users"]);
         let sql = "SELECT * FROM users UNION SELECT * FROM users";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0], "users");
     }
@@ -357,7 +361,7 @@ mod tests {
     fn test_extract_dependencies_sorted() {
         let lookup = make_lookup(&["zebra", "apple", "middle"]);
         let sql = "SELECT * FROM zebra, middle JOIN apple ON true";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert_eq!(deps, vec!["apple", "middle", "zebra"]);
     }
 
@@ -365,8 +369,16 @@ mod tests {
     fn test_extract_dependencies_partial_match_excluded() {
         let lookup = make_lookup(&["user"]);
         let sql = "SELECT * FROM users";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_extract_dependencies_invalid_sql() {
+        let lookup = make_lookup(&["users"]);
+        let sql = "INVALID SQL SYNTAX @#$%";
+        let result = extract_dependencies(sql, &lookup);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -450,7 +462,7 @@ mod tests {
     fn test_extract_dependencies_subquery() {
         let lookup = make_lookup(&["users", "orders"]);
         let sql = "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert!(deps.contains(&"users".to_string()));
         assert!(deps.contains(&"orders".to_string()));
     }
@@ -459,7 +471,7 @@ mod tests {
     fn test_extract_dependencies_derived_table() {
         let lookup = make_lookup(&["users"]);
         let sql = "SELECT * FROM (SELECT * FROM users) AS sub";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert_eq!(deps, vec!["users"]);
     }
 
@@ -467,7 +479,7 @@ mod tests {
     fn test_extract_dependencies_exists_clause() {
         let lookup = make_lookup(&["users", "orders"]);
         let sql = "SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert!(deps.contains(&"users".to_string()));
         assert!(deps.contains(&"orders".to_string()));
     }
@@ -476,7 +488,7 @@ mod tests {
     fn test_extract_dependencies_union_query() {
         let lookup = make_lookup(&["a", "b"]);
         let sql = "SELECT * FROM a UNION ALL SELECT * FROM b";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert!(deps.contains(&"a".to_string()));
         assert!(deps.contains(&"b".to_string()));
     }
@@ -485,7 +497,7 @@ mod tests {
     fn test_extract_dependencies_nested_cte() {
         let lookup = make_lookup(&["base", "intermediate"]);
         let sql = "WITH intermediate AS (SELECT * FROM base) SELECT * FROM intermediate";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert_eq!(deps, vec!["base"]);
     }
 
@@ -497,9 +509,9 @@ mod tests {
         let sql_c = "SELECT * FROM A";
         let sql_d = "SELECT * FROM B, C";
 
-        let deps_b = extract_dependencies(sql_b, &lookup);
-        let deps_c = extract_dependencies(sql_c, &lookup);
-        let deps_d = extract_dependencies(sql_d, &lookup);
+        let deps_b = extract_dependencies(sql_b, &lookup).unwrap();
+        let deps_c = extract_dependencies(sql_c, &lookup).unwrap();
+        let deps_d = extract_dependencies(sql_d, &lookup).unwrap();
 
         assert_eq!(deps_b, vec!["A"]);
         assert_eq!(deps_c, vec!["A"]);
@@ -510,7 +522,7 @@ mod tests {
     #[test]
     fn test_extract_dependencies_table_at_end() {
         let lookup = make_lookup(&["t"]);
-        let deps = extract_dependencies("SELECT * FROM t", &lookup);
+        let deps = extract_dependencies("SELECT * FROM t", &lookup).unwrap();
         assert_eq!(deps, vec!["t"]);
     }
 
@@ -531,7 +543,7 @@ mod tests {
     fn test_extract_dependencies_complex_join() {
         let lookup = make_lookup(&["users", "orders", "products"]);
         let sql = "SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id INNER JOIN products ON orders.product_id = products.id";
-        let deps = extract_dependencies(sql, &lookup);
+        let deps = extract_dependencies(sql, &lookup).unwrap();
         assert!(deps.contains(&"users".to_string()));
         assert!(deps.contains(&"orders".to_string()));
         assert!(deps.contains(&"products".to_string()));

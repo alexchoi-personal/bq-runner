@@ -3,37 +3,13 @@ mod json;
 mod yacht;
 
 #[cfg(test)]
-use std::borrow::Cow;
-
-#[cfg(test)]
 pub(crate) use arrow::arrow_value_to_sql;
 pub(crate) use arrow::arrow_value_to_sql_into;
 pub use json::json_to_sql_value;
 pub(crate) use json::json_to_sql_value_into;
-pub(crate) use yacht::{base64_encode, datatype_to_bq_type, yacht_value_into_json};
-
 #[cfg(test)]
-fn escape_sql_string(s: &str) -> Cow<'_, str> {
-    let needs_escaping = s.chars().any(|c| c == '\'' || c == '\\' || c == '\0');
-    if !needs_escaping {
-        return Cow::Borrowed(s);
-    }
-
-    let escaped_count = s
-        .chars()
-        .filter(|&c| c == '\'' || c == '\\' || c == '\0')
-        .count();
-    let mut result = String::with_capacity(s.len() + escaped_count);
-    for c in s.chars() {
-        match c {
-            '\'' => result.push_str("''"),
-            '\\' => result.push_str("\\\\"),
-            '\0' => result.push_str("\\0"),
-            _ => result.push(c),
-        }
-    }
-    Cow::Owned(result)
-}
+pub(crate) use yacht::base64_encode;
+pub(crate) use yacht::{base64_encode_into, datatype_to_bq_type, yacht_value_into_json};
 
 fn escape_sql_string_into(s: &str, buf: &mut String) {
     if !s.bytes().any(|b| b == b'\'' || b == b'\\' || b == 0) {
@@ -53,6 +29,12 @@ fn escape_sql_string_into(s: &str, buf: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn escape_sql_string(s: &str) -> String {
+        let mut buf = String::new();
+        escape_sql_string_into(s, &mut buf);
+        buf
+    }
 
     #[test]
     fn test_escape_sql_string_no_special_chars() {

@@ -3,7 +3,7 @@ use std::fmt::Write;
 use arrow::array::*;
 use arrow::datatypes::DataType as ArrowDataType;
 
-use super::{base64_encode, escape_sql_string_into};
+use super::{base64_encode_into, escape_sql_string_into};
 
 macro_rules! downcast_or_null {
     ($array:expr, $array_type:ty, $buf:expr) => {
@@ -133,19 +133,19 @@ pub(crate) fn arrow_value_to_sql_into(
         ArrowDataType::Binary => {
             let arr = downcast_or_null!(array, BinaryArray, buf);
             buf.push_str("FROM_BASE64('");
-            buf.push_str(&base64_encode(arr.value(row)));
+            base64_encode_into(arr.value(row), buf);
             buf.push_str("')");
         }
         ArrowDataType::LargeBinary => {
             let arr = downcast_or_null!(array, LargeBinaryArray, buf);
             buf.push_str("FROM_BASE64('");
-            buf.push_str(&base64_encode(arr.value(row)));
+            base64_encode_into(arr.value(row), buf);
             buf.push_str("')");
         }
         ArrowDataType::FixedSizeBinary(_) => {
             let arr = downcast_or_null!(array, FixedSizeBinaryArray, buf);
             buf.push_str("FROM_BASE64('");
-            buf.push_str(&base64_encode(arr.value(row)));
+            base64_encode_into(arr.value(row), buf);
             buf.push_str("')");
         }
         _ => buf.push_str("NULL"),
