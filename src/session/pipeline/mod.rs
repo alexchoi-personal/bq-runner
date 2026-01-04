@@ -395,8 +395,8 @@ impl Pipeline {
     }
 
     fn topological_sort_levels(&self, queries: &HashSet<String>) -> Result<Vec<Vec<String>>> {
-        let mut in_degree: HashMap<String, usize> = HashMap::new();
-        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        let mut in_degree: HashMap<String, usize> = HashMap::with_capacity(queries.len());
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::with_capacity(queries.len());
 
         for query in queries {
             in_degree.entry(query.clone()).or_insert(0);

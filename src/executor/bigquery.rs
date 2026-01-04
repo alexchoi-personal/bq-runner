@@ -303,7 +303,7 @@ impl BigQueryExecutor {
                     .iter()
                     .map(|field| ColumnInfo {
                         name: field.name.clone(),
-                        data_type: bq_type_to_string(&field.data_type),
+                        data_type: bq_type_to_string(&field.data_type).to_owned(),
                     })
                     .collect()
             })
@@ -368,22 +368,22 @@ impl ExecutorBackend for BigQueryExecutor {
     }
 }
 
-fn bq_type_to_string(field_type: &TableFieldType) -> String {
+fn bq_type_to_string(field_type: &TableFieldType) -> &'static str {
     match field_type {
-        TableFieldType::String => "STRING".to_string(),
-        TableFieldType::Bytes => "BYTES".to_string(),
-        TableFieldType::Integer | TableFieldType::Int64 => "INT64".to_string(),
-        TableFieldType::Float | TableFieldType::Float64 => "FLOAT64".to_string(),
-        TableFieldType::Boolean | TableFieldType::Bool => "BOOLEAN".to_string(),
-        TableFieldType::Timestamp => "TIMESTAMP".to_string(),
-        TableFieldType::Record | TableFieldType::Struct => "STRUCT".to_string(),
-        TableFieldType::Date => "DATE".to_string(),
-        TableFieldType::Time => "TIME".to_string(),
-        TableFieldType::Datetime => "DATETIME".to_string(),
-        TableFieldType::Numeric | TableFieldType::Decimal => "NUMERIC".to_string(),
-        TableFieldType::Bignumeric | TableFieldType::Bigdecimal => "BIGNUMERIC".to_string(),
-        TableFieldType::Interval => "INTERVAL".to_string(),
-        TableFieldType::Json => "JSON".to_string(),
+        TableFieldType::String => "STRING",
+        TableFieldType::Bytes => "BYTES",
+        TableFieldType::Integer | TableFieldType::Int64 => "INT64",
+        TableFieldType::Float | TableFieldType::Float64 => "FLOAT64",
+        TableFieldType::Boolean | TableFieldType::Bool => "BOOLEAN",
+        TableFieldType::Timestamp => "TIMESTAMP",
+        TableFieldType::Record | TableFieldType::Struct => "STRUCT",
+        TableFieldType::Date => "DATE",
+        TableFieldType::Time => "TIME",
+        TableFieldType::Datetime => "DATETIME",
+        TableFieldType::Numeric | TableFieldType::Decimal => "NUMERIC",
+        TableFieldType::Bignumeric | TableFieldType::Bigdecimal => "BIGNUMERIC",
+        TableFieldType::Interval => "INTERVAL",
+        TableFieldType::Json => "JSON",
     }
 }
 
