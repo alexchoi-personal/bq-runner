@@ -21,7 +21,12 @@ pub(super) async fn execute_table_with_timeout(
     let timeout_duration = Duration::from_secs(timeout_secs);
     let result = timeout(timeout_duration, execute_table_inner(executor, table))
         .await
-        .map_err(|_| Error::RequestTimeout(timeout_secs))?;
+        .map_err(|_| {
+            Error::Executor(format!(
+                "Table '{}' timed out after {} seconds",
+                table.name, timeout_secs
+            ))
+        })?;
     debug!(elapsed_ms = %start.elapsed().as_millis(), "Table execution completed");
     result
 }
