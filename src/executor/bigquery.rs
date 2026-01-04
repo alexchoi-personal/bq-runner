@@ -191,6 +191,27 @@ impl BigQueryExecutor {
                 );
                 if let Err(e) = self.cancel_job(job_id).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Cancellation failed");
+                } else {
+                    for retry in 1..=3 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        let get_request = GetJobRequest { location: None };
+                        match self
+                            .client
+                            .job()
+                            .get(&self.project_id, job_id, &get_request)
+                            .await
+                        {
+                            Ok(status) if status.status.state == JobState::Done => {
+                                tracing::info!(job_id = %job_id, "Job confirmed cancelled/completed");
+                                break;
+                            }
+                            Ok(_) if retry == 3 => {
+                                tracing::error!(job_id = %job_id, "Job still running after cancellation");
+                            }
+                            Err(_) => break,
+                            _ => {}
+                        }
+                    }
                 }
                 return Err(Error::Timeout {
                     job_id: job_id.to_string(),

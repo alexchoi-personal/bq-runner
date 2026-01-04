@@ -195,6 +195,7 @@ fn stream_parquet_batches(path: &Path, tx: mpsc::Sender<Result<RecordBatch>>) {
             }
         };
         if tx.blocking_send(Ok(batch)).is_err() {
+            tracing::trace!("Parquet channel receiver dropped, stopping batch streaming");
             return;
         }
     }

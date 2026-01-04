@@ -416,7 +416,7 @@ impl RpcMethods {
         let p: RunDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
         let targets = p.table_names;
-        let retry_count = p.retry_count;
+        let retry_count = p.retry_count.min(100);
 
         let result = self
             .session_manager
