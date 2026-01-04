@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -135,18 +136,32 @@ impl ColumnDef {
 
 impl From<(String, String)> for ColumnDef {
     fn from((name, column_type): (String, String)) -> Self {
+        let parsed_type = match column_type.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                warn!(column = %name, type_str = %column_type, "Unknown column type, defaulting to Unknown");
+                ColumnType::Unknown
+            }
+        };
         Self {
             name,
-            column_type: column_type.parse().unwrap_or(ColumnType::Unknown),
+            column_type: parsed_type,
         }
     }
 }
 
 impl From<(&str, &str)> for ColumnDef {
     fn from((name, column_type): (&str, &str)) -> Self {
+        let parsed_type = match column_type.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                warn!(column = %name, type_str = %column_type, "Unknown column type, defaulting to Unknown");
+                ColumnType::Unknown
+            }
+        };
         Self {
             name: name.to_string(),
-            column_type: column_type.parse().unwrap_or(ColumnType::Unknown),
+            column_type: parsed_type,
         }
     }
 }
