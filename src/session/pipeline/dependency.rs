@@ -67,36 +67,33 @@ fn hash_sql(sql: &str) -> u64 {
     hasher.finish()
 }
 
-fn parse_sql_cached(sql: &str) -> Option<Arc<Vec<Statement>>> {
+fn parse_sql_cached(sql: &str) -> Result<Arc<Vec<Statement>>, String> {
     let hash = hash_sql(sql);
     let shard = PARSE_CACHE.get_shard(hash);
 
     {
         let cache = shard.lock();
         if let Some(statements) = cache.get(hash) {
-            return Some(statements);
+            return Ok(statements);
         }
     }
 
     let dialect = BigQueryDialect {};
-    let statements = Arc::new(Parser::parse_sql(&dialect, sql).ok()?);
+    let statements = Arc::new(Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?);
 
     {
         let mut cache = shard.lock();
         cache.insert(hash, Arc::clone(&statements));
     }
 
-    Some(statements)
+    Ok(statements)
 }
 
 pub fn extract_dependencies(
     sql: &str,
     table_name_lookup: &HashMap<String, String>,
-) -> Option<Vec<String>> {
-    let Some(statements) = parse_sql_cached(sql) else {
-        tracing::warn!(sql_prefix = %sql.chars().take(100).collect::<String>(), "Failed to parse SQL for dependency extraction");
-        return None;
-    };
+) -> Result<Vec<String>, String> {
+    let statements = parse_sql_cached(sql)?;
 
     let mut cte_names = HashSet::new();
     let mut referenced_tables = HashSet::new();
@@ -121,7 +118,7 @@ pub fn extract_dependencies(
 
     deps.sort();
     deps.dedup();
-    Some(deps)
+    Ok(deps)
 }
 
 #[cfg(test)]
@@ -378,7 +375,8 @@ mod tests {
         let lookup = make_lookup(&["users"]);
         let sql = "INVALID SQL SYNTAX @#$%";
         let result = extract_dependencies(sql, &lookup);
-        assert!(result.is_none());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Expected"));
     }
 
     #[test]

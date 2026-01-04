@@ -73,3 +73,7 @@ harness = false
 [[bench]]
 name = "parquet_loading"
 harness = false
+
+[[bench]]
+name = "dependency_extraction"
+harness = false

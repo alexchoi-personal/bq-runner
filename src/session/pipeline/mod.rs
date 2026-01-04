@@ -71,21 +71,17 @@ impl Pipeline {
         }
 
         for name in &new_names {
-            let deps = temp_tables
-                .get(name)
-                .and_then(|t| t.sql.as_ref())
-                .map(|sql| extract_dependencies(sql, &self.table_name_lookup));
-            if let Some(maybe_deps) = deps {
-                match maybe_deps {
-                    Some(deps) => {
+            if let Some(sql) = temp_tables.get(name).and_then(|t| t.sql.as_ref()) {
+                match extract_dependencies(sql, &self.table_name_lookup) {
+                    Ok(deps) => {
                         if let Some(table) = temp_tables.get_mut(name) {
                             table.dependencies = deps;
                         }
                     }
-                    None => {
+                    Err(parse_error) => {
                         return Err(Error::InvalidRequest(format!(
-                            "Failed to parse SQL for table '{}': unable to extract dependencies",
-                            name
+                            "Failed to parse SQL for table '{}': {}",
+                            name, parse_error
                         )));
                     }
                 }
@@ -472,13 +468,9 @@ impl Pipeline {
     pub fn register_table(&mut self, name: &str, sql: &str) -> Result<Vec<String>> {
         self.table_name_lookup
             .insert(name.to_uppercase(), name.to_string());
-        let deps =
-            dependency::extract_dependencies(sql, &self.table_name_lookup).ok_or_else(|| {
-                Error::InvalidRequest(format!(
-                    "Failed to parse SQL for table '{}': unable to extract dependencies",
-                    name
-                ))
-            })?;
+        let deps = dependency::extract_dependencies(sql, &self.table_name_lookup).map_err(|e| {
+            Error::InvalidRequest(format!("Failed to parse SQL for table '{}': {}", name, e))
+        })?;
         let table = PipelineTable {
             name: name.to_string(),
             sql: Some(sql.to_string()),

@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::validation::quote_identifier;
 
-use super::converters::json_to_sql_value;
+use super::converters::json_to_sql_value_into;
 
 #[derive(Debug)]
 pub(crate) struct ParsedRows {
@@ -56,28 +56,48 @@ pub(crate) fn parse_insert_rows(rows: &[Value]) -> Result<ParsedRows> {
             .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
         let cols: Vec<String> = first_obj.keys().cloned().collect();
         let mut vals: Vec<String> = Vec::with_capacity(rows.len());
+        let mut row_buf = String::with_capacity(cols.len() * 16);
         for (row_idx, row) in rows.iter().enumerate() {
             let obj = row
                 .as_object()
                 .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
-            let mut row_vals: Vec<String> = Vec::with_capacity(cols.len());
-            for col in &cols {
+            row_buf.clear();
+            row_buf.push('(');
+            for (i, col) in cols.iter().enumerate() {
+                if i > 0 {
+                    row_buf.push_str(", ");
+                }
                 let val = obj.get(col).ok_or_else(|| {
                     Error::InvalidRequest(format!("Row {} is missing column '{}'", row_idx, col))
                 })?;
-                row_vals.push(json_to_sql_value(val));
+                json_to_sql_value_into(val, &mut row_buf);
             }
-            vals.push(format!("({})", row_vals.join(", ")));
+            row_buf.push(')');
+            vals.push(row_buf.clone());
         }
         (Some(cols), vals)
     } else {
         let mut vals: Vec<String> = Vec::with_capacity(rows.len());
+        let avg_cols = rows
+            .first()
+            .and_then(|r| r.as_array())
+            .map(|a| a.len())
+            .unwrap_or(4);
+        let mut row_buf = String::with_capacity(avg_cols * 16);
         for row in rows {
             let arr = row
                 .as_array()
                 .ok_or_else(|| Error::InvalidRequest("Expected array row format".into()))?;
-            let row_vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-            vals.push(format!("({})", row_vals.join(", ")));
+            row_buf.clear();
+            row_buf.push('(');
+            for (i, val) in arr.iter().enumerate() {
+                if i > 0 {
+                    row_buf.push_str(", ");
+                }
+                json_to_sql_value_into(val, &mut row_buf);
+            }
+            row_buf.push(')');
+            vals.push(row_buf.clone());
         }
         (None, vals)
     };
