@@ -72,7 +72,7 @@ impl SessionManagerBuilder {
 struct Session {
     executor: Arc<dyn ExecutorBackend>,
     mock_executor: Option<Arc<YachtSqlExecutor>>,
-    pipeline: Pipeline,
+    pipeline: Arc<Pipeline>,
     last_accessed_nanos: AtomicU64,
     created_at: Instant,
 }
@@ -86,7 +86,7 @@ impl Session {
         Self {
             executor,
             mock_executor,
-            pipeline: Pipeline::with_max_concurrency(max_concurrency),
+            pipeline: Arc::new(Pipeline::with_max_concurrency(max_concurrency)),
             last_accessed_nanos: AtomicU64::new(0),
             created_at: Instant::now(),
         }
@@ -341,7 +341,9 @@ impl SessionManager {
                 validate_sql_for_define_table(sql)?;
             }
         }
-        self.with_session_mut(session_id, |session| session.pipeline.register(tables))
+        self.with_session_mut(session_id, |session| {
+            Arc::make_mut(&mut session.pipeline).register(tables)
+        })
     }
 
     pub async fn run_dag(
@@ -355,7 +357,7 @@ impl SessionManager {
             let session = sessions
                 .get(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
-            (session.pipeline.clone(), Arc::clone(&session.executor))
+            (Arc::clone(&session.pipeline), Arc::clone(&session.executor))
         };
 
         let mut result = pipeline.run(Arc::clone(&executor), targets).await?;
@@ -389,7 +391,7 @@ impl SessionManager {
             let session = sessions
                 .get(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
-            (session.pipeline.clone(), Arc::clone(&session.executor))
+            (Arc::clone(&session.pipeline), Arc::clone(&session.executor))
         };
 
         let previous_result = PipelineResult {
@@ -412,24 +414,30 @@ impl SessionManager {
     }
 
     pub async fn clear_dag(&self, session_id: Uuid) -> Result<()> {
-        let (executor, mut pipeline) = {
+        let (executor, pipeline) = {
             let mut sessions = self.sessions.write();
             let session = sessions
                 .get_mut(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
-            (
-                Arc::clone(&session.executor),
-                std::mem::take(&mut session.pipeline),
-            )
+            let pipeline = std::mem::replace(
+                &mut session.pipeline,
+                Arc::new(Pipeline::with_max_concurrency(
+                    self.session_config.max_concurrency,
+                )),
+            );
+            (Arc::clone(&session.executor), pipeline)
         };
-        pipeline.clear(executor.as_ref()).await
+        match Arc::try_unwrap(pipeline) {
+            Ok(mut pipeline) => pipeline.clear(executor.as_ref()).await,
+            Err(arc) => Arc::make_mut(&mut { arc }).clear(executor.as_ref()).await,
+        }
     }
 
     pub fn define_table(&self, session_id: Uuid, name: &str, sql: &str) -> Result<Vec<String>> {
         validate_table_name(name)?;
         validate_sql_for_define_table(sql)?;
         let result = self.with_session_mut(session_id, |session| {
-            session.pipeline.register_table(name, sql)
+            Arc::make_mut(&mut session.pipeline).register_table(name, sql)
         });
         if result.is_ok() {
             record_tables_defined(1);
@@ -445,7 +453,7 @@ impl SessionManager {
         executor.execute_statement(&drop_sql).await?;
 
         self.with_session_mut(session_id, |session| {
-            session.pipeline.remove_table(name);
+            Arc::make_mut(&mut session.pipeline).remove_table(name);
             Ok(())
         })
     }
@@ -468,7 +476,7 @@ impl SessionManager {
         }
 
         self.with_session_mut(session_id, |session| {
-            session.pipeline.clear_state();
+            Arc::make_mut(&mut session.pipeline).clear_state();
             Ok(())
         })
     }

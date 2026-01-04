@@ -278,8 +278,8 @@ impl Pipeline {
                 let mut s = state.lock();
                 s.finish_in_flight(&name);
                 match &outcome {
-                    Ok(()) => s.mark_completed(&name),
-                    Err(_) => s.mark_blocked(&name),
+                    Ok(()) => s.mark_completed(name.clone()),
+                    Err(_) => s.mark_blocked(name.clone()),
                 }
             }
 
@@ -306,7 +306,7 @@ impl Pipeline {
                     .collect();
 
                 for name in newly_skipped {
-                    s.mark_blocked(&name);
+                    s.mark_blocked(name.clone());
                     result.skipped.push(name);
                     processed += 1;
                 }
@@ -327,7 +327,7 @@ impl Pipeline {
             let ready_refs = s.ready_tables();
             let ready: Vec<String> = ready_refs.into_iter().cloned().collect();
             for name in &ready {
-                s.mark_in_flight(name);
+                s.mark_in_flight(name.clone());
             }
             ready
         };
@@ -2115,8 +2115,8 @@ mod tests {
                 let mut s = state.lock();
                 s.finish_in_flight(&name);
                 match &outcome {
-                    Ok(()) => s.mark_completed(&name),
-                    Err(_) => s.mark_blocked(&name),
+                    Ok(()) => s.mark_completed(name.clone()),
+                    Err(_) => s.mark_blocked(name.clone()),
                 }
                 s.completed.len() + s.blocked.len()
             };

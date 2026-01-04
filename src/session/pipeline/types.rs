@@ -74,23 +74,23 @@ impl StreamState {
             && self.is_pending(name)
     }
 
-    pub fn mark_completed(&mut self, name: &str) {
-        self.completed.insert(name.to_string());
-        if let Some(dependents) = self.reverse_deps.get(name) {
+    pub fn mark_completed(&mut self, name: String) {
+        if let Some(dependents) = self.reverse_deps.get(&name) {
             for dependent in dependents {
                 if let Some(deps) = self.pending_deps.get_mut(dependent) {
-                    deps.remove(name);
+                    deps.remove(&name);
                 }
             }
         }
+        self.completed.insert(name);
     }
 
-    pub fn mark_blocked(&mut self, name: &str) {
-        self.blocked.insert(name.to_string());
+    pub fn mark_blocked(&mut self, name: String) {
+        self.blocked.insert(name);
     }
 
-    pub fn mark_in_flight(&mut self, name: &str) {
-        self.in_flight.insert(name.to_string());
+    pub fn mark_in_flight(&mut self, name: String) {
+        self.in_flight.insert(name);
     }
 
     pub fn finish_in_flight(&mut self, name: &str) {
@@ -274,7 +274,7 @@ mod tests {
             HashMap::from([("a".to_string(), HashSet::new())]),
             DEFAULT_MAX_CONCURRENCY,
         );
-        state.mark_completed("a");
+        state.mark_completed("a".to_string());
         assert!(!state.is_pending("a"));
     }
 
@@ -284,7 +284,7 @@ mod tests {
             HashMap::from([("a".to_string(), HashSet::new())]),
             DEFAULT_MAX_CONCURRENCY,
         );
-        state.mark_blocked("a");
+        state.mark_blocked("a".to_string());
         assert!(!state.is_pending("a"));
     }
 
@@ -294,7 +294,7 @@ mod tests {
             HashMap::from([("a".to_string(), HashSet::new())]),
             DEFAULT_MAX_CONCURRENCY,
         );
-        state.mark_in_flight("a");
+        state.mark_in_flight("a".to_string());
         assert!(!state.is_pending("a"));
     }
 
@@ -332,7 +332,7 @@ mod tests {
             DEFAULT_MAX_CONCURRENCY,
         );
 
-        state.mark_completed("a");
+        state.mark_completed("a".to_string());
 
         assert!(state.completed.contains("a"));
         assert!(state.pending_deps.get("b").unwrap().is_empty());
@@ -345,7 +345,7 @@ mod tests {
             DEFAULT_MAX_CONCURRENCY,
         );
 
-        state.mark_blocked("a");
+        state.mark_blocked("a".to_string());
 
         assert!(state.blocked.contains("a"));
         assert!(!state.is_pending("a"));
@@ -358,7 +358,7 @@ mod tests {
             DEFAULT_MAX_CONCURRENCY,
         );
 
-        state.mark_in_flight("a");
+        state.mark_in_flight("a".to_string());
 
         assert!(state.in_flight.contains("a"));
         assert!(!state.is_pending("a"));
@@ -370,7 +370,7 @@ mod tests {
             HashMap::from([("a".to_string(), HashSet::new())]),
             DEFAULT_MAX_CONCURRENCY,
         );
-        state.mark_in_flight("a");
+        state.mark_in_flight("a".to_string());
 
         state.finish_in_flight("a");
 
@@ -380,8 +380,8 @@ mod tests {
     #[test]
     fn test_stream_state_ready_tables_empty_when_at_capacity() {
         let mut state = StreamState::new(HashMap::from([("a".to_string(), HashSet::new())]), 2);
-        state.mark_in_flight("b");
-        state.mark_in_flight("c");
+        state.mark_in_flight("b".to_string());
+        state.mark_in_flight("c".to_string());
 
         let ready = state.ready_tables();
         assert!(ready.is_empty());
