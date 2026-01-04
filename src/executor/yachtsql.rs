@@ -116,8 +116,12 @@ impl YachtSqlExecutor {
                 rows_in_batch += 1;
 
                 if rows_in_batch >= INSERT_BATCH_SIZE {
-                    let insert_sql =
-                        format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
+                    let mut insert_sql =
+                        String::with_capacity(13 + quoted_table.len() + 8 + batch_buffer.len());
+                    insert_sql.push_str("INSERT INTO ");
+                    insert_sql.push_str(&quoted_table);
+                    insert_sql.push_str(" VALUES ");
+                    insert_sql.push_str(&batch_buffer);
                     self.executor
                         .execute_sql(&insert_sql)
                         .await
@@ -128,7 +132,12 @@ impl YachtSqlExecutor {
             }
 
             if rows_in_batch > 0 {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_table, batch_buffer);
+                let mut insert_sql =
+                    String::with_capacity(13 + quoted_table.len() + 8 + batch_buffer.len());
+                insert_sql.push_str("INSERT INTO ");
+                insert_sql.push_str(&quoted_table);
+                insert_sql.push_str(" VALUES ");
+                insert_sql.push_str(&batch_buffer);
                 self.executor
                     .execute_sql(&insert_sql)
                     .await

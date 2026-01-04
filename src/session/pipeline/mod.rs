@@ -324,7 +324,8 @@ impl Pipeline {
     ) {
         let ready_to_spawn: Vec<String> = {
             let mut s = state.lock();
-            let ready: Vec<String> = s.ready_tables().into_iter().cloned().collect();
+            let ready_refs = s.ready_tables();
+            let ready: Vec<String> = ready_refs.into_iter().cloned().collect();
             for name in &ready {
                 s.mark_in_flight(name);
             }

@@ -55,50 +55,60 @@ pub(crate) fn parse_insert_rows(rows: &[Value]) -> Result<ParsedRows> {
             .as_object()
             .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
         let cols: Vec<String> = first_obj.keys().cloned().collect();
-        let mut vals: Vec<String> = Vec::with_capacity(rows.len());
-        let mut row_buf = String::with_capacity(cols.len() * 16);
+        let avg_row_len = cols.len() * 16 + 2;
+        let mut all_values = String::with_capacity(rows.len() * (avg_row_len + 1));
+        let mut offsets: Vec<usize> = Vec::with_capacity(rows.len() + 1);
+        offsets.push(0);
         for (row_idx, row) in rows.iter().enumerate() {
             let obj = row
                 .as_object()
                 .ok_or_else(|| Error::InvalidRequest("Expected object row format".into()))?;
-            row_buf.clear();
-            row_buf.push('(');
+            all_values.push('(');
             for (i, col) in cols.iter().enumerate() {
                 if i > 0 {
-                    row_buf.push_str(", ");
+                    all_values.push_str(", ");
                 }
                 let val = obj.get(col).ok_or_else(|| {
                     Error::InvalidRequest(format!("Row {} is missing column '{}'", row_idx, col))
                 })?;
-                json_to_sql_value_into(val, &mut row_buf);
+                json_to_sql_value_into(val, &mut all_values);
             }
-            row_buf.push(')');
-            vals.push(row_buf.clone());
+            all_values.push(')');
+            offsets.push(all_values.len());
         }
+        let vals: Vec<String> = offsets
+            .windows(2)
+            .map(|w| all_values[w[0]..w[1]].to_string())
+            .collect();
         (Some(cols), vals)
     } else {
-        let mut vals: Vec<String> = Vec::with_capacity(rows.len());
         let avg_cols = rows
             .first()
             .and_then(|r| r.as_array())
             .map(|a| a.len())
             .unwrap_or(4);
-        let mut row_buf = String::with_capacity(avg_cols * 16);
+        let avg_row_len = avg_cols * 16 + 2;
+        let mut all_values = String::with_capacity(rows.len() * (avg_row_len + 1));
+        let mut offsets: Vec<usize> = Vec::with_capacity(rows.len() + 1);
+        offsets.push(0);
         for row in rows {
             let arr = row
                 .as_array()
                 .ok_or_else(|| Error::InvalidRequest("Expected array row format".into()))?;
-            row_buf.clear();
-            row_buf.push('(');
+            all_values.push('(');
             for (i, val) in arr.iter().enumerate() {
                 if i > 0 {
-                    row_buf.push_str(", ");
+                    all_values.push_str(", ");
                 }
-                json_to_sql_value_into(val, &mut row_buf);
+                json_to_sql_value_into(val, &mut all_values);
             }
-            row_buf.push(')');
-            vals.push(row_buf.clone());
+            all_values.push(')');
+            offsets.push(all_values.len());
         }
+        let vals: Vec<String> = offsets
+            .windows(2)
+            .map(|w| all_values[w[0]..w[1]].to_string())
+            .collect();
         (None, vals)
     };
 

@@ -77,3 +77,7 @@ harness = false
 [[bench]]
 name = "dependency_extraction"
 harness = false
+
+[[bench]]
+name = "session_management"
+harness = false

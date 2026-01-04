@@ -88,10 +88,11 @@ async fn insert_rows_batched(
     }
 
     let avg_cols = rows.first().map(|r| r.len()).unwrap_or(4);
-    let prefix = format!("INSERT INTO {} VALUES ", quoted_name);
-    let prefix_len = prefix.len();
+    let prefix_len = 13 + quoted_name.len() + 8;
     let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
-    sql_buffer.push_str(&prefix);
+    sql_buffer.push_str("INSERT INTO ");
+    sql_buffer.push_str(quoted_name);
+    sql_buffer.push_str(" VALUES ");
 
     let mut rows_in_batch = 0;
     let mut total_rows_inserted = 0usize;
@@ -150,10 +151,11 @@ async fn insert_source_rows_batched(
         .and_then(|r| r.as_array())
         .map(|a| a.len())
         .unwrap_or(4);
-    let prefix = format!("INSERT INTO {} VALUES ", quoted_name);
-    let prefix_len = prefix.len();
+    let prefix_len = 13 + quoted_name.len() + 8;
     let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
-    sql_buffer.push_str(&prefix);
+    sql_buffer.push_str("INSERT INTO ");
+    sql_buffer.push_str(quoted_name);
+    sql_buffer.push_str(" VALUES ");
 
     let mut rows_in_batch = 0;
     let mut total_rows_inserted = 0usize;
@@ -225,17 +227,31 @@ async fn create_source_table_standalone(
             )));
         }
 
-        let quoted_name = format!("`{}`", quote_identifier(&table.name));
-        let columns: Vec<String> = schema
-            .iter()
-            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
-            .collect();
+        let quoted_identifier = quote_identifier(&table.name);
+        let quoted_name_len = quoted_identifier.len() + 2;
+        let mut quoted_name = String::with_capacity(quoted_name_len);
+        quoted_name.push('`');
+        quoted_name.push_str(&quoted_identifier);
+        quoted_name.push('`');
 
-        let create_sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} ({})",
-            quoted_name,
-            columns.join(", ")
-        );
+        let col_defs_len: usize = schema
+            .iter()
+            .map(|col| col.name.len() + col.column_type.as_str().len() + 5)
+            .sum();
+        let mut create_sql = String::with_capacity(27 + quoted_name_len + col_defs_len);
+        create_sql.push_str("CREATE TABLE IF NOT EXISTS ");
+        create_sql.push_str(&quoted_name);
+        create_sql.push_str(" (");
+        for (i, col) in schema.iter().enumerate() {
+            if i > 0 {
+                create_sql.push_str(", ");
+            }
+            create_sql.push('`');
+            create_sql.push_str(&quote_identifier(&col.name));
+            create_sql.push_str("` ");
+            create_sql.push_str(col.column_type.as_str());
+        }
+        create_sql.push(')');
         executor.execute_statement(&create_sql).await?;
 
         if !table.rows.is_empty() {
