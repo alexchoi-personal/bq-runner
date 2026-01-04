@@ -1,6 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
+use tracing::warn;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TableStatus {
+    #[default]
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -125,18 +136,32 @@ impl ColumnDef {
 
 impl From<(String, String)> for ColumnDef {
     fn from((name, column_type): (String, String)) -> Self {
+        let parsed_type = match column_type.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                warn!(column = %name, type_str = %column_type, "Unknown column type, defaulting to Unknown");
+                ColumnType::Unknown
+            }
+        };
         Self {
             name,
-            column_type: column_type.parse().unwrap_or(ColumnType::Unknown),
+            column_type: parsed_type,
         }
     }
 }
 
 impl From<(&str, &str)> for ColumnDef {
     fn from((name, column_type): (&str, &str)) -> Self {
+        let parsed_type = match column_type.parse() {
+            Ok(t) => t,
+            Err(_) => {
+                warn!(column = %name, type_str = %column_type, "Unknown column type, defaulting to Unknown");
+                ColumnType::Unknown
+            }
+        };
         Self {
             name: name.to_string(),
-            column_type: column_type.parse().unwrap_or(ColumnType::Unknown),
+            column_type: parsed_type,
         }
     }
 }
@@ -149,6 +174,7 @@ pub struct TableDef {
     pub rows: Vec<Value>,
     pub dependencies: Vec<String>,
     pub is_source: bool,
+    pub status: TableStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +227,12 @@ pub struct ParquetTableInfo {
     pub path: String,
     #[serde(rename = "rowCount")]
     pub row_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TableError {
+    pub table: String,
+    pub error: String,
 }
 
 #[cfg(test)]
@@ -435,6 +467,7 @@ mod tests {
             rows: vec![serde_json::json!(1)],
             dependencies: vec!["dep".to_string()],
             is_source: false,
+            status: TableStatus::Pending,
         };
         let cloned = table.clone();
         assert_eq!(cloned.name, "test");
@@ -450,9 +483,62 @@ mod tests {
             rows: vec![],
             dependencies: vec![],
             is_source: true,
+            status: TableStatus::default(),
         };
         let debug = format!("{:?}", table);
         assert!(debug.contains("TableDef"));
+    }
+
+    #[test]
+    fn test_table_status_default() {
+        let status = TableStatus::default();
+        assert_eq!(status, TableStatus::Pending);
+    }
+
+    #[test]
+    fn test_table_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Succeeded).unwrap(),
+            "\"succeeded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TableStatus::Failed).unwrap(),
+            "\"failed\""
+        );
+    }
+
+    #[test]
+    fn test_table_status_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"pending\"").unwrap(),
+            TableStatus::Pending
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"running\"").unwrap(),
+            TableStatus::Running
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"succeeded\"").unwrap(),
+            TableStatus::Succeeded
+        );
+        assert_eq!(
+            serde_json::from_str::<TableStatus>("\"failed\"").unwrap(),
+            TableStatus::Failed
+        );
+    }
+
+    #[test]
+    fn test_table_status_eq() {
+        assert_eq!(TableStatus::Pending, TableStatus::Pending);
+        assert_ne!(TableStatus::Pending, TableStatus::Running);
     }
 
     #[test]

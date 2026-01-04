@@ -1,0 +1,19 @@
+# BQ Runner Configuration
+#
+# Environment variable overrides:
+# - BQ_RUNNER_ALLOWED_PATHS: Colon-separated list of allowed paths
+# - BQ_RUNNER_BLOCK_SYMLINKS: "true" or "false"
+# - BQ_RUNNER_AUDIT_LOGGING: "true" or "false"
+# - BQ_RUNNER_LOG_FORMAT: "json" or "text"
+
+[security]
+# Directories allowed for file loading (absolute paths)
+allowed_paths = [
+    "/data/warehouse",
+    "/workspace/datasets",
+]
+block_symlinks = true
+
+[logging]
+format = "json"
+audit_enabled = true

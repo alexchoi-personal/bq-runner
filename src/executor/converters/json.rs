@@ -1,21 +1,51 @@
+use std::fmt::Write;
+
 use serde_json::Value;
 
+use super::escape_sql_string_into;
+
 pub fn json_to_sql_value(val: &Value) -> String {
+    let mut buf = String::new();
+    json_to_sql_value_into(val, &mut buf);
+    buf
+}
+
+pub(crate) fn json_to_sql_value_into(val: &Value, buf: &mut String) {
     match val {
-        Value::Null => "NULL".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Null => buf.push_str("NULL"),
+        Value::Bool(b) => {
+            buf.push_str(if *b { "true" } else { "false" });
+        }
+        Value::Number(n) => {
+            let _ = write!(buf, "{}", n);
+        }
+        Value::String(s) => {
+            buf.push('\'');
+            escape_sql_string_into(s, buf);
+            buf.push('\'');
+        }
         Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-            format!("[{}]", items.join(", "))
+            buf.push('[');
+            for (i, item) in arr.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
+                }
+                json_to_sql_value_into(item, buf);
+            }
+            buf.push(']');
         }
         Value::Object(obj) => {
-            let fields: Vec<String> = obj
-                .iter()
-                .map(|(k, v)| format!("'{}': {}", k, json_to_sql_value(v)))
-                .collect();
-            format!("{{{}}}", fields.join(", "))
+            buf.push('{');
+            for (i, (k, v)) in obj.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
+                }
+                buf.push('\'');
+                escape_sql_string_into(k, buf);
+                buf.push_str("': ");
+                json_to_sql_value_into(v, buf);
+            }
+            buf.push('}');
         }
     }
 }
@@ -51,8 +81,8 @@ mod tests {
 
     #[test]
     fn test_number_float() {
-        let val = json!(3.14);
-        assert_eq!(json_to_sql_value(&val), "3.14");
+        let val = json!(1.234);
+        assert_eq!(json_to_sql_value(&val), "1.234");
     }
 
     #[test]

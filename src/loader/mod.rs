@@ -1,10 +1,15 @@
-use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use glob::glob;
 
+use crate::config::SecurityConfig;
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+use crate::validation::{open_file_secure, validate_path, validate_path_async};
 
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -46,7 +51,13 @@ impl FileLoader {
 
         let files: Vec<PathBuf> = glob(&pattern_str)
             .map_err(|e| Error::Loader(format!("Invalid glob pattern: {}", e)))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to read path during glob traversal");
+                    None
+                }
+            })
             .collect();
 
         files
@@ -64,7 +75,10 @@ impl FileLoader {
             .ok_or_else(|| Error::Loader(format!("Invalid filename: {}", path.display())))?
             .to_string();
 
-        let content = fs::read_to_string(path)
+        let mut file = open_file_secure(path)
+            .map_err(|e| Error::Loader(format!("Failed to open {}: {}", path.display(), e)))?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)
             .map_err(|e| Error::Loader(format!("Failed to read {}: {}", path.display(), e)))?;
 
         Ok(LoadedFile {
@@ -87,12 +101,32 @@ impl SqlLoader {
     }
 }
 
-pub fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
+pub fn discover_files_secure(root_path: &str, config: &SecurityConfig) -> Result<DiscoveredFiles> {
+    let validated_root = validate_path(root_path, config)?;
+    discover_files_internal(&validated_root)
+}
+
+pub async fn discover_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<DiscoveredFiles> {
+    let validated_root = validate_path_async(root_path, config).await?;
+    tokio::task::spawn_blocking(move || discover_files_internal(&validated_root))
+        .await
+        .map_err(|e| Error::Internal(format!("Task join error: {}", e)))?
+}
+
+#[cfg(test)]
+fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
     let root = Path::new(root_path);
+    discover_files_internal(root)
+}
+
+fn discover_files_internal(root: &Path) -> Result<DiscoveredFiles> {
     if !root.is_dir() {
         return Err(Error::Executor(format!(
             "Root path is not a directory: {}",
-            root_path
+            root.display()
         )));
     }
 
@@ -153,13 +187,44 @@ pub fn discover_files(root_path: &str) -> Result<DiscoveredFiles> {
     })
 }
 
-pub fn discover_sql_files(root_path: &str) -> Result<Vec<SqlFile>> {
+#[cfg(test)]
+fn discover_sql_files(root_path: &str) -> Result<Vec<SqlFile>> {
     let discovered = discover_files(root_path)?;
     Ok(discovered.sql_files)
 }
 
-pub fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
+pub fn discover_sql_files_secure(root_path: &str, config: &SecurityConfig) -> Result<Vec<SqlFile>> {
+    let discovered = discover_files_secure(root_path, config)?;
+    Ok(discovered.sql_files)
+}
+
+pub async fn discover_sql_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<SqlFile>> {
+    let discovered = discover_files_secure_async(root_path, config).await?;
+    Ok(discovered.sql_files)
+}
+
+#[cfg(test)]
+fn discover_parquet_files(root_path: &str) -> Result<Vec<ParquetFile>> {
     let discovered = discover_files(root_path)?;
+    Ok(discovered.parquet_files)
+}
+
+pub fn discover_parquet_files_secure(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<ParquetFile>> {
+    let discovered = discover_files_secure(root_path, config)?;
+    Ok(discovered.parquet_files)
+}
+
+pub async fn discover_parquet_files_secure_async(
+    root_path: &str,
+    config: &SecurityConfig,
+) -> Result<Vec<ParquetFile>> {
+    let discovered = discover_files_secure_async(root_path, config).await?;
     Ok(discovered.parquet_files)
 }
 
@@ -171,8 +236,12 @@ fn read_dir(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
 }
 
 fn read_file(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|e| Error::Executor(format!("Failed to read file {}: {}", path.display(), e)))
+    let mut file = open_file_secure(path)
+        .map_err(|e| Error::Executor(format!("Failed to open file {}: {}", path.display(), e)))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| Error::Executor(format!("Failed to read file {}: {}", path.display(), e)))?;
+    Ok(content)
 }
 
 fn load_schema(dataset_path: &Path, table_name: &str) -> Result<Vec<ColumnDef>> {
@@ -224,7 +293,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
-            Error::Loader(msg) => assert!(msg.contains("Failed to read")),
+            Error::Loader(msg) => assert!(msg.contains("Failed to open")),
             _ => panic!("Expected Loader error"),
         }
     }

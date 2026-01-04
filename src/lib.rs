@@ -1,19 +1,25 @@
+pub mod config;
 pub mod domain;
 pub mod error;
 pub mod executor;
 pub mod loader;
+pub mod metrics;
 pub mod rpc;
 pub mod session;
-pub mod utils;
+pub mod validation;
 
-pub use domain::{ColumnDef, TableDef, TableInfo};
+pub use config::{
+    AuthConfig, Config, LogFormat, LoggingConfig, RpcConfig, SecurityConfig, SessionConfig,
+};
+pub use domain::{ColumnDef, DagTableDef, TableDef, TableInfo};
 pub use error::{Error, Result};
 pub use executor::converters::json_to_sql_value;
-pub use executor::{
-    BigQueryExecutor, ColumnInfo, ExecutorBackend, ExecutorMode, QueryResult, YachtSqlExecutor,
-};
+pub use executor::{ColumnInfo, ExecutorBackend, ExecutorMode, QueryResult, YachtSqlExecutor};
 pub use loader::{
-    discover_files, discover_parquet_files, discover_sql_files, DiscoveredFiles, FileLoader,
-    LoadedFile, ParquetFile, SqlFile, SqlLoader,
+    discover_files_secure, discover_parquet_files_secure, discover_sql_files_secure,
+    DiscoveredFiles, FileLoader, LoadedFile, ParquetFile, SqlFile, SqlLoader,
 };
-pub use session::SessionManager;
+pub use session::{Pipeline, SessionManager, SessionManagerBuilder};
+pub use validation::{
+    quote_identifier, validate_sql_for_define_table, validate_sql_for_query, validate_table_name,
+};

@@ -1,12 +1,24 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::methods::RpcMethods;
 use super::types::{RpcRequest, RpcResponse};
+use crate::error::Error;
+use crate::metrics::{
+    record_rpc_duration, record_rpc_error, record_rpc_request, record_rpc_success,
+};
+
+fn extract_session_id(params: &serde_json::Value) -> Option<String> {
+    params
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
 
 pub async fn handle_websocket(socket: WebSocket, methods: Arc<RpcMethods>) {
     let (mut sender, mut receiver) = socket.split();
@@ -35,8 +47,8 @@ pub async fn handle_websocket(socket: WebSocket, methods: Arc<RpcMethods>) {
             }
         };
 
-        if sender.send(Message::Text(response_text)).await.is_err() {
-            error!("Failed to send response");
+        if let Err(e) = sender.send(Message::Text(response_text)).await {
+            error!(error = %e, "Failed to send response");
             break;
         }
     }
@@ -52,23 +64,83 @@ pub async fn process_message(msg: &str, methods: &RpcMethods) -> RpcResponse {
         return RpcResponse::invalid_request();
     }
 
-    let id = request.id.clone().unwrap_or(Value::Null);
-    let method_name = request.method.clone();
+    let start = Instant::now();
+    let audit_enabled = methods.audit_enabled();
+    let session_id = if audit_enabled {
+        extract_session_id(&request.params)
+    } else {
+        None
+    };
+    let request_id = if audit_enabled {
+        Some(uuid::Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+    let RpcRequest {
+        id, method, params, ..
+    } = request;
+    let id = id.unwrap_or(Value::Null);
 
-    let session_id = request
-        .params
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    record_rpc_request(&method);
 
-    match methods.dispatch(&request.method, request.params).await {
-        Ok(result) => RpcResponse::success(id, result),
+    if let Some(ref req_id) = request_id {
+        info!(
+            target: "audit",
+            request_id = %req_id,
+            method = %method,
+            session_id = ?session_id,
+            "request_received"
+        );
+    }
+
+    let timeout_secs = methods.rpc_config().request_timeout_secs;
+    let timeout_duration = Duration::from_secs(timeout_secs);
+    let result =
+        match tokio::time::timeout(timeout_duration, methods.dispatch(&method, params)).await {
+            Ok(result) => result,
+            Err(_) => Err(Error::RequestTimeout(timeout_secs)),
+        };
+
+    record_rpc_duration(&method, start);
+
+    if let Some(ref req_id) = request_id {
+        let duration_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            Ok(_) => info!(
+                target: "audit",
+                request_id = %req_id,
+                method = %method,
+                session_id = ?session_id,
+                duration_ms = duration_ms,
+                status = "success",
+                "request_completed"
+            ),
+            Err(e) => warn!(
+                target: "audit",
+                request_id = %req_id,
+                method = %method,
+                session_id = ?session_id,
+                duration_ms = duration_ms,
+                status = "error",
+                error = %e,
+                "request_completed"
+            ),
+        }
+    }
+
+    match result {
+        Ok(result) => {
+            record_rpc_success(&method);
+            RpcResponse::success(id, result)
+        }
         Err(e) => {
             if matches!(e, crate::error::Error::InvalidRequest(ref msg) if msg.starts_with("Unknown method"))
             {
-                RpcResponse::method_not_found(id, &method_name)
+                record_rpc_error(&method, -32601);
+                RpcResponse::method_not_found(id, &method)
             } else {
-                let e = e.with_context(&method_name, session_id.as_deref());
+                let e = e.with_context(&method, session_id.as_deref());
+                record_rpc_error(&method, e.code());
                 RpcResponse::error(id, e.code(), e.to_string())
             }
         }

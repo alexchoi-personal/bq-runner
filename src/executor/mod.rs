@@ -1,19 +1,21 @@
 mod bigquery;
 pub mod converters;
+pub(crate) mod sql_builder;
 mod yachtsql;
 
 #[cfg(test)]
 mod test_counting;
 
 pub use self::bigquery::BigQueryExecutor;
-pub(crate) use self::yachtsql::MockExecutorExt;
 pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
 pub use crate::domain::ColumnDef;
+
+pub(crate) const INSERT_BATCH_SIZE: usize = 1000;
 
 #[cfg(test)]
 pub use self::test_counting::TestCountingExecutor;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use async_trait::async_trait;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,10 +28,55 @@ pub enum ExecutorMode {
 #[async_trait]
 pub trait ExecutorBackend: Send + Sync {
     fn mode(&self) -> ExecutorMode;
+
     async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
+
     async fn execute_statement(&self, sql: &str) -> Result<u64>;
+
     async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef])
         -> Result<u64>;
+
+    async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
+        Err(Error::Executor(
+            "list_tables is only available in mock mode".into(),
+        ))
+    }
+
+    async fn describe_table(&self, _table_name: &str) -> Result<(Vec<(String, String)>, u64)> {
+        Err(Error::Executor(
+            "describe_table is only available in mock mode".into(),
+        ))
+    }
+
+    fn set_default_project(&self, _project: Option<String>) -> Result<()> {
+        Err(Error::Executor(
+            "set_default_project is only available in mock mode".into(),
+        ))
+    }
+
+    fn get_default_project(&self) -> Result<Option<String>> {
+        Err(Error::Executor(
+            "get_default_project is only available in mock mode".into(),
+        ))
+    }
+
+    fn get_projects(&self) -> Result<Vec<String>> {
+        Err(Error::Executor(
+            "get_projects is only available in mock mode".into(),
+        ))
+    }
+
+    fn get_datasets(&self, _project: &str) -> Result<Vec<String>> {
+        Err(Error::Executor(
+            "get_datasets is only available in mock mode".into(),
+        ))
+    }
+
+    fn get_tables_in_dataset(&self, _project: &str, _dataset: &str) -> Result<Vec<String>> {
+        Err(Error::Executor(
+            "get_tables_in_dataset is only available in mock mode".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -151,38 +198,54 @@ mod tests {
     #[tokio::test]
     async fn test_yachtsql_executor_set_default_project() {
         let executor = YachtSqlExecutor::new();
-        executor.set_default_project(Some("my-project".to_string()));
-        let project = executor.get_default_project();
+        executor
+            .set_default_project(Some("my-project".to_string()))
+            .unwrap();
+        let project = executor.get_default_project().unwrap();
         assert!(project.is_some());
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_set_default_project_none() {
         let executor = YachtSqlExecutor::new();
-        executor.set_default_project(Some("test".to_string()));
-        executor.set_default_project(None);
-        let project = executor.get_default_project();
+        executor
+            .set_default_project(Some("test".to_string()))
+            .unwrap();
+        executor.set_default_project(None).unwrap();
+        let project = executor.get_default_project().unwrap();
         assert!(project.is_none());
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_get_projects() {
         let executor = YachtSqlExecutor::new();
-        let projects = executor.get_projects();
-        assert!(projects.is_empty() || !projects.is_empty());
+        executor
+            .execute_statement("CREATE TABLE proj.ds.t (id INT64)")
+            .await
+            .unwrap();
+        let projects = executor.get_projects().unwrap();
+        assert!(projects.contains(&"PROJ".to_string()));
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_get_datasets() {
         let executor = YachtSqlExecutor::new();
-        let datasets = executor.get_datasets("project");
-        assert!(datasets.is_empty() || !datasets.is_empty());
+        executor
+            .execute_statement("CREATE TABLE myproj.myds.t (id INT64)")
+            .await
+            .unwrap();
+        let datasets = executor.get_datasets("myproj").unwrap();
+        assert!(datasets.contains(&"MYDS".to_string()));
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_get_tables_in_dataset() {
         let executor = YachtSqlExecutor::new();
-        let tables = executor.get_tables_in_dataset("project", "dataset");
-        assert!(tables.is_empty() || !tables.is_empty());
+        executor
+            .execute_statement("CREATE TABLE proj.ds.my_table (id INT64)")
+            .await
+            .unwrap();
+        let tables = executor.get_tables_in_dataset("proj", "ds").unwrap();
+        assert!(tables.contains(&"MY_TABLE".to_string()));
     }
 }

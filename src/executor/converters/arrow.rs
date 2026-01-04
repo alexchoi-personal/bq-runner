@@ -1,121 +1,160 @@
+use std::fmt::Write;
+
 use arrow::array::*;
 use arrow::datatypes::DataType as ArrowDataType;
 
-pub fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -> String {
+use super::{base64_encode_into, escape_sql_string_into};
+
+macro_rules! downcast_or_null {
+    ($array:expr, $array_type:ty, $buf:expr) => {
+        match $array.as_any().downcast_ref::<$array_type>() {
+            Some(arr) => arr,
+            None => {
+                $buf.push_str("NULL");
+                return;
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn arrow_value_to_sql(array: &dyn Array, row: usize, bq_type: &str) -> String {
+    let mut buf = String::new();
+    arrow_value_to_sql_into(array, row, bq_type, &mut buf);
+    buf
+}
+
+pub(crate) fn arrow_value_to_sql_into(
+    array: &dyn Array,
+    row: usize,
+    bq_type: &str,
+    buf: &mut String,
+) {
     if array.is_null(row) {
-        return "NULL".to_string();
+        buf.push_str("NULL");
+        return;
     }
 
     match array.data_type() {
         ArrowDataType::Boolean => {
-            let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, BooleanArray, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Int8 => {
-            let arr = array.as_any().downcast_ref::<Int8Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, Int8Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Int16 => {
-            let arr = array.as_any().downcast_ref::<Int16Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, Int16Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Int32 => {
-            let arr = array.as_any().downcast_ref::<Int32Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, Int32Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Int64 => {
-            let arr = array.as_any().downcast_ref::<Int64Array>().unwrap();
+            let arr = downcast_or_null!(array, Int64Array, buf);
             let val = arr.value(row);
-            match bq_type.to_uppercase().as_str() {
-                "DATE" => format!("DATE_FROM_UNIX_DATE({})", val),
-                "TIMESTAMP" => format!("TIMESTAMP_MICROS({})", val),
-                _ => val.to_string(),
+            if bq_type.eq_ignore_ascii_case("DATE") {
+                let _ = write!(buf, "DATE_FROM_UNIX_DATE({})", val);
+            } else if bq_type.eq_ignore_ascii_case("TIMESTAMP") {
+                let _ = write!(buf, "TIMESTAMP_MICROS({})", val);
+            } else {
+                let _ = write!(buf, "{}", val);
             }
         }
         ArrowDataType::UInt8 => {
-            let arr = array.as_any().downcast_ref::<UInt8Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, UInt8Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::UInt16 => {
-            let arr = array.as_any().downcast_ref::<UInt16Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, UInt16Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::UInt32 => {
-            let arr = array.as_any().downcast_ref::<UInt32Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, UInt32Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::UInt64 => {
-            let arr = array.as_any().downcast_ref::<UInt64Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, UInt64Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Float32 => {
-            let arr = array.as_any().downcast_ref::<Float32Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, Float32Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Float64 => {
-            let arr = array.as_any().downcast_ref::<Float64Array>().unwrap();
-            arr.value(row).to_string()
+            let arr = downcast_or_null!(array, Float64Array, buf);
+            let _ = write!(buf, "{}", arr.value(row));
         }
         ArrowDataType::Utf8 => {
-            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
-            format!("'{}'", arr.value(row).replace('\'', "''"))
+            let arr = downcast_or_null!(array, StringArray, buf);
+            buf.push('\'');
+            escape_sql_string_into(arr.value(row), buf);
+            buf.push('\'');
         }
         ArrowDataType::LargeUtf8 => {
-            let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
-            format!("'{}'", arr.value(row).replace('\'', "''"))
+            let arr = downcast_or_null!(array, LargeStringArray, buf);
+            buf.push('\'');
+            escape_sql_string_into(arr.value(row), buf);
+            buf.push('\'');
         }
         ArrowDataType::Date32 => {
-            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
-            let days = arr.value(row);
-            format!("DATE_FROM_UNIX_DATE({})", days)
+            let arr = downcast_or_null!(array, Date32Array, buf);
+            let _ = write!(buf, "DATE_FROM_UNIX_DATE({})", arr.value(row));
         }
         ArrowDataType::Date64 => {
-            let arr = array.as_any().downcast_ref::<Date64Array>().unwrap();
+            let arr = downcast_or_null!(array, Date64Array, buf);
             let ms = arr.value(row);
             let days = ms / (24 * 60 * 60 * 1000);
-            format!("DATE_FROM_UNIX_DATE({})", days)
+            let _ = write!(buf, "DATE_FROM_UNIX_DATE({})", days);
         }
         ArrowDataType::Timestamp(unit, _) => {
             let micros = match unit {
                 arrow::datatypes::TimeUnit::Second => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<TimestampSecondArray>()
-                        .unwrap();
+                    let arr = downcast_or_null!(array, TimestampSecondArray, buf);
                     arr.value(row) * 1_000_000
                 }
                 arrow::datatypes::TimeUnit::Millisecond => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<TimestampMillisecondArray>()
-                        .unwrap();
+                    let arr = downcast_or_null!(array, TimestampMillisecondArray, buf);
                     arr.value(row) * 1_000
                 }
                 arrow::datatypes::TimeUnit::Microsecond => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<TimestampMicrosecondArray>()
-                        .unwrap();
+                    let arr = downcast_or_null!(array, TimestampMicrosecondArray, buf);
                     arr.value(row)
                 }
                 arrow::datatypes::TimeUnit::Nanosecond => {
-                    let arr = array
-                        .as_any()
-                        .downcast_ref::<TimestampNanosecondArray>()
-                        .unwrap();
+                    let arr = downcast_or_null!(array, TimestampNanosecondArray, buf);
                     arr.value(row) / 1_000
                 }
             };
-            format!("TIMESTAMP_MICROS({})", micros)
+            let _ = write!(buf, "TIMESTAMP_MICROS({})", micros);
         }
-        _ => "NULL".to_string(),
+        ArrowDataType::Binary => {
+            let arr = downcast_or_null!(array, BinaryArray, buf);
+            buf.push_str("FROM_BASE64('");
+            base64_encode_into(arr.value(row), buf);
+            buf.push_str("')");
+        }
+        ArrowDataType::LargeBinary => {
+            let arr = downcast_or_null!(array, LargeBinaryArray, buf);
+            buf.push_str("FROM_BASE64('");
+            base64_encode_into(arr.value(row), buf);
+            buf.push_str("')");
+        }
+        ArrowDataType::FixedSizeBinary(_) => {
+            let arr = downcast_or_null!(array, FixedSizeBinaryArray, buf);
+            buf.push_str("FROM_BASE64('");
+            base64_encode_into(arr.value(row), buf);
+            buf.push_str("')");
+        }
+        _ => buf.push_str("NULL"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_arrow_value_to_sql_null() {
@@ -156,8 +195,8 @@ mod tests {
 
     #[test]
     fn test_arrow_value_to_sql_float64() {
-        let arr = Float64Array::from(vec![Some(3.14)]);
-        assert_eq!(arrow_value_to_sql(&arr, 0, "FLOAT64"), "3.14");
+        let arr = Float64Array::from(vec![Some(1.234)]);
+        assert_eq!(arrow_value_to_sql(&arr, 0, "FLOAT64"), "1.234");
     }
 
     #[test]

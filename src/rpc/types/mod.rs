@@ -1,9 +1,14 @@
 mod core;
-mod dag;
-mod query;
+pub(crate) mod dag;
+pub(crate) mod query;
 mod session;
+mod table;
 
 pub use core::*;
-pub use dag::*;
-pub use query::*;
+pub use query::{
+    ColumnDef, CreateTableParams, CreateTableResult, DescribeTableParams, DescribeTableResult,
+    InsertParams, InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult,
+    QueryParams, TableInfo,
+};
 pub use session::*;
+pub use table::*;

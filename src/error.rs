@@ -8,6 +8,9 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("Session not found: {0}")]
     SessionNotFound(uuid::Uuid),
 
@@ -25,6 +28,9 @@ pub enum Error {
 
     #[error("BigQuery job {job_id} timed out after {elapsed_secs} seconds")]
     Timeout { job_id: String, elapsed_secs: u64 },
+
+    #[error("Request timed out after {0} seconds")]
+    RequestTimeout(u64),
 }
 
 impl Error {
@@ -32,12 +38,14 @@ impl Error {
         match self {
             Error::Executor(_) => -32000,
             Error::Json(_) => -32700,
+            Error::Io(_) => -32006,
             Error::SessionNotFound(_) => -32002,
             Error::InvalidRequest(_) => -32600,
             Error::Internal(_) => -32603,
             Error::Loader(_) => -32001,
             Error::BigQuery(_) => -32003,
             Error::Timeout { .. } => -32004,
+            Error::RequestTimeout(_) => -32005,
         }
     }
 
@@ -52,6 +60,7 @@ impl Error {
             Error::Internal(msg) => Error::Internal(format!("{} {}", context, msg)),
             Error::Loader(msg) => Error::Loader(format!("{} {}", context, msg)),
             Error::BigQuery(msg) => Error::BigQuery(format!("{} {}", context, msg)),
+            Error::InvalidRequest(msg) => Error::InvalidRequest(format!("{} {}", context, msg)),
             other => other,
         }
     }
@@ -213,11 +222,14 @@ mod tests {
     }
 
     #[test]
-    fn test_with_context_passthrough_invalid_request() {
+    fn test_with_context_invalid_request() {
         let err = Error::InvalidRequest("bad".to_string());
         let contextualized = err.with_context("validate", None);
         match contextualized {
-            Error::InvalidRequest(msg) => assert_eq!(msg, "bad"),
+            Error::InvalidRequest(msg) => {
+                assert!(msg.contains("[method=validate]"));
+                assert!(msg.contains("bad"));
+            }
             _ => panic!("Expected InvalidRequest variant"),
         }
     }
@@ -234,5 +246,17 @@ mod tests {
         let err = Error::Executor("test".to_string());
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("Executor"));
+    }
+
+    #[test]
+    fn test_error_display_request_timeout() {
+        let err = Error::RequestTimeout(300);
+        assert_eq!(format!("{}", err), "Request timed out after 300 seconds");
+    }
+
+    #[test]
+    fn test_error_code_request_timeout() {
+        let err = Error::RequestTimeout(300);
+        assert_eq!(err.code(), -32005);
     }
 }

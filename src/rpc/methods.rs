@@ -4,9 +4,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::config::RpcConfig;
+use crate::domain::ColumnType;
 use crate::error::{Error, Result};
+use crate::executor::sql_builder::{build_insert_sql, parse_insert_rows};
 use crate::session::SessionManager;
-use crate::utils::json_to_sql_value;
+use crate::validation::{quote_identifier, validate_sql_for_query, validate_table_name};
 
 pub trait HasSessionId {
     fn session_id(&self) -> &str;
@@ -30,17 +33,23 @@ fn parse_session_params<T: DeserializeOwned + HasSessionId>(params: Value) -> Re
     Ok((p, session_id))
 }
 
+use super::types::dag::{
+    ClearDagParams, ClearDagResult, GetDagParams, GetDagResult, LoadDagFromDirectoryParams,
+    LoadDagFromDirectoryResult, LoadParquetDirectoryParams, LoadParquetDirectoryResult,
+    LoadSqlDirectoryParams, LoadSqlDirectoryResult, RegisterDagParams, RegisterDagResult,
+    RetryDagParams, RunDagParams, RunDagResult,
+};
+use super::types::query::ListTablesParams as QueryListTablesParams;
 use super::types::{
-    ClearDagParams, ClearDagResult, ColumnDef, CreateSessionResult, CreateTableParams,
-    CreateTableResult, DescribeTableParams, DescribeTableResult, DestroySessionParams,
-    DestroySessionResult, GetDagParams, GetDagResult, GetDatasetsParams, GetDatasetsResult,
+    ColumnDef, CreateSessionResult, CreateTableParams, CreateTableResult, DefineTableParams,
+    DefineTableResult, DefineTablesParams, DefineTablesResult, DescribeTableParams,
+    DescribeTableResult, DestroySessionParams, DestroySessionResult, DropAllTablesParams,
+    DropTableParams, ExecuteParams, ExecuteResult, GetDatasetsParams, GetDatasetsResult,
     GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams, GetProjectsResult,
-    GetTablesInDatasetParams, GetTablesInDatasetResult, InsertParams, InsertResult,
-    ListTablesParams, ListTablesResult, LoadDagFromDirectoryParams, LoadDagFromDirectoryResult,
-    LoadParquetDirectoryParams, LoadParquetDirectoryResult, LoadParquetParams, LoadParquetResult,
-    LoadSqlDirectoryParams, LoadSqlDirectoryResult, PingResult, QueryParams, RegisterDagParams,
-    RegisterDagResult, RetryDagParams, RunDagParams, RunDagResult, SetDefaultProjectParams,
-    SetDefaultProjectResult, TableErrorInfo, TableInfo,
+    GetTablesInDatasetParams, GetTablesInDatasetResult, HealthCheck, HealthResult, InsertParams,
+    InsertResult, ListTablesResult, LivenessResult, LoadDirectoryParams, LoadDirectoryResult,
+    LoadParquetParams, LoadParquetResult, LoadedTableInfo, PingResult, QueryParams,
+    ReadinessResult, SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
 };
 
 impl_has_session_id!(
@@ -54,21 +63,68 @@ impl_has_session_id!(
 
 pub struct RpcMethods {
     session_manager: Arc<SessionManager>,
+    audit_enabled: bool,
+    rpc_config: RpcConfig,
 }
 
 impl RpcMethods {
     pub fn new(session_manager: Arc<SessionManager>) -> Self {
-        Self { session_manager }
+        Self {
+            session_manager,
+            audit_enabled: false,
+            rpc_config: RpcConfig::default(),
+        }
+    }
+
+    pub fn with_audit(session_manager: Arc<SessionManager>, audit_enabled: bool) -> Self {
+        Self {
+            session_manager,
+            audit_enabled,
+            rpc_config: RpcConfig::default(),
+        }
+    }
+
+    pub fn with_config(
+        session_manager: Arc<SessionManager>,
+        audit_enabled: bool,
+        rpc_config: RpcConfig,
+    ) -> Self {
+        Self {
+            session_manager,
+            audit_enabled,
+            rpc_config,
+        }
+    }
+
+    pub fn audit_enabled(&self) -> bool {
+        self.audit_enabled
+    }
+
+    pub fn rpc_config(&self) -> &RpcConfig {
+        &self.rpc_config
+    }
+
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.session_manager
     }
 
     pub async fn dispatch(&self, method: &str, params: Value) -> Result<Value> {
         match method {
             "bq.ping" => self.ping(params).await,
+            "bq.health" => self.health(params).await,
+            "bq.readiness" => self.readiness(params).await,
+            "bq.liveness" => self.liveness(params).await,
             "bq.createSession" => self.create_session(params).await,
             "bq.destroySession" => self.destroy_session(params).await,
             "bq.query" => self.query(params).await,
             "bq.createTable" => self.create_table(params).await,
             "bq.insert" => self.insert(params).await,
+            "bq.defineTable" => self.define_table(params).await,
+            "bq.defineTables" => self.define_tables(params).await,
+            "bq.dropTable" => self.drop_table(params).await,
+            "bq.dropAllTables" => self.drop_all_tables(params).await,
+            "bq.execute" => self.execute_tables(params).await,
+            "bq.loadDirectory" => self.load_directory(params).await,
             "bq.registerDag" => self.register_dag(params).await,
             "bq.runDag" => self.run_dag(params).await,
             "bq.retryDag" => self.retry_dag(params).await,
@@ -90,7 +146,170 @@ impl RpcMethods {
     }
 
     async fn ping(&self, _params: Value) -> Result<Value> {
-        Ok(json!(PingResult { message: "pong".to_string() }))
+        Ok(json!(PingResult {
+            message: "pong".to_string()
+        }))
+    }
+
+    async fn health(&self, _params: Value) -> Result<Value> {
+        let session_count = self.session_manager.session_count();
+        let uptime_seconds = self.session_manager.uptime_seconds();
+        Ok(json!(HealthResult {
+            status: "healthy".to_string(),
+            session_count,
+            uptime_seconds,
+        }))
+    }
+
+    async fn readiness(&self, _params: Value) -> Result<Value> {
+        let mut checks = Vec::new();
+        let mut all_passing = true;
+
+        let executor_check = match self.session_manager.check_executor_health().await {
+            Ok(()) => HealthCheck {
+                name: "executor".to_string(),
+                status: "pass".to_string(),
+                message: None,
+            },
+            Err(e) => {
+                all_passing = false;
+                HealthCheck {
+                    name: "executor".to_string(),
+                    status: "fail".to_string(),
+                    message: Some(e.to_string()),
+                }
+            }
+        };
+        checks.push(executor_check);
+
+        let session_check = HealthCheck {
+            name: "sessions".to_string(),
+            status: "pass".to_string(),
+            message: Some(format!("{} active", self.session_manager.session_count())),
+        };
+        checks.push(session_check);
+
+        Ok(json!(ReadinessResult {
+            ready: all_passing,
+            status: if all_passing { "ready" } else { "not_ready" }.to_string(),
+            checks,
+        }))
+    }
+
+    async fn liveness(&self, _params: Value) -> Result<Value> {
+        Ok(json!(LivenessResult {
+            alive: true,
+            uptime_seconds: self.session_manager.uptime_seconds(),
+        }))
+    }
+
+    async fn define_table(&self, params: Value) -> Result<Value> {
+        let p: DefineTableParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        if p.sql.len() > self.rpc_config.max_sql_length {
+            return Err(Error::InvalidRequest(format!(
+                "SQL exceeds maximum length of {} bytes",
+                self.rpc_config.max_sql_length
+            )));
+        }
+        let deps = self
+            .session_manager
+            .define_table(session_id, &p.name, &p.sql)?;
+        Ok(json!(DefineTableResult {
+            success: true,
+            dependencies: deps,
+        }))
+    }
+
+    async fn define_tables(&self, params: Value) -> Result<Value> {
+        let p: DefineTablesParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        for t in &p.tables {
+            if t.sql.len() > self.rpc_config.max_sql_length {
+                return Err(Error::InvalidRequest(format!(
+                    "SQL for table '{}' exceeds maximum length of {} bytes",
+                    t.name, self.rpc_config.max_sql_length
+                )));
+            }
+        }
+        let mut results = Vec::new();
+        for t in &p.tables {
+            let deps = self
+                .session_manager
+                .define_table(session_id, &t.name, &t.sql)?;
+            results.push(DefineTableResult {
+                success: true,
+                dependencies: deps,
+            });
+        }
+        Ok(json!(DefineTablesResult {
+            success: true,
+            tables: results,
+        }))
+    }
+
+    async fn drop_table(&self, params: Value) -> Result<Value> {
+        let p: DropTableParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        self.session_manager.drop_table(session_id, &p.name).await?;
+        Ok(json!({"success": true}))
+    }
+
+    async fn drop_all_tables(&self, params: Value) -> Result<Value> {
+        let p: DropAllTablesParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        self.session_manager.drop_all_tables(session_id).await?;
+        Ok(json!({"success": true}))
+    }
+
+    async fn execute_tables(&self, params: Value) -> Result<Value> {
+        let p: ExecuteParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+        let targets = p.tables;
+        let retry_count = if p.force { 1 } else { 0 };
+
+        let result = self
+            .session_manager
+            .run_dag(session_id, targets, retry_count)
+            .await?;
+
+        Ok(json!(ExecuteResult {
+            success: result.all_succeeded(),
+            succeeded: result.succeeded,
+            failed: result.failed,
+            skipped: result.skipped,
+        }))
+    }
+
+    async fn load_directory(&self, params: Value) -> Result<Value> {
+        let p: LoadDirectoryParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+
+        let (source_tables, _computed_tables, dag_info) = self
+            .session_manager
+            .load_dag_from_directory(session_id, &p.path)
+            .await?;
+
+        let mut tables = Vec::new();
+        for t in source_tables {
+            tables.push(LoadedTableInfo {
+                name: format!("{}.{}.{}", t.project, t.dataset, t.table),
+                kind: "source".to_string(),
+                dependencies: vec![],
+            });
+        }
+        for t in dag_info {
+            tables.push(LoadedTableInfo {
+                name: t.name,
+                kind: "computed".to_string(),
+                dependencies: t.dependencies,
+            });
+        }
+
+        Ok(json!(LoadDirectoryResult {
+            success: true,
+            tables,
+        }))
     }
 
     async fn create_session(&self, _params: Value) -> Result<Value> {
@@ -111,6 +330,15 @@ impl RpcMethods {
         let p: QueryParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
+        if p.sql.len() > self.rpc_config.max_sql_length {
+            return Err(Error::InvalidRequest(format!(
+                "SQL query exceeds maximum length of {} bytes",
+                self.rpc_config.max_sql_length
+            )));
+        }
+
+        validate_sql_for_query(&p.sql)?;
+
         let result = self
             .session_manager
             .execute_query(session_id, &p.sql)
@@ -123,13 +351,26 @@ impl RpcMethods {
         let p: CreateTableParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
+        validate_table_name(&p.table_name)?;
+
+        for col in &p.schema {
+            validate_table_name(&col.name)?;
+            if col.column_type == ColumnType::Unknown {
+                return Err(Error::InvalidRequest(format!(
+                    "Unknown column type for column '{}'",
+                    col.name
+                )));
+            }
+        }
+
+        let quoted_table = format!("`{}`", quote_identifier(&p.table_name));
         let columns: Vec<String> = p
             .schema
             .iter()
-            .map(|col| format!("{} {}", col.name, col.column_type))
+            .map(|col| format!("`{}` {}", quote_identifier(&col.name), col.column_type))
             .collect();
 
-        let sql = format!("CREATE TABLE {} ({})", p.table_name, columns.join(", "));
+        let sql = format!("CREATE TABLE {} ({})", quoted_table, columns.join(", "));
 
         self.session_manager
             .execute_statement(session_id, &sql)
@@ -142,28 +383,27 @@ impl RpcMethods {
         let p: InsertParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
+        validate_table_name(&p.table_name)?;
+
         if p.rows.is_empty() {
             return Ok(json!(InsertResult { inserted_rows: 0 }));
         }
 
-        let values: Vec<String> = p
-            .rows
-            .iter()
-            .filter_map(|row| {
-                if let Value::Array(arr) = row {
-                    let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                    Some(format!("({})", vals.join(", ")))
-                } else if let Value::Object(obj) = row {
-                    let vals: Vec<String> = obj.values().map(json_to_sql_value).collect();
-                    Some(format!("({})", vals.join(", ")))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        if p.rows.len() > self.rpc_config.max_rows_per_insert {
+            return Err(Error::InvalidRequest(format!(
+                "Insert exceeds maximum of {} rows per request",
+                self.rpc_config.max_rows_per_insert
+            )));
+        }
 
-        let row_count = values.len() as u64;
-        let sql = format!("INSERT INTO {} VALUES {}", p.table_name, values.join(", "));
+        let parsed = parse_insert_rows(&p.rows)?;
+
+        let row_count = parsed.values.len() as u64;
+        let sql = build_insert_sql(
+            &p.table_name,
+            parsed.column_names.as_deref(),
+            &parsed.values,
+        );
 
         self.session_manager
             .execute_statement(session_id, &sql)
@@ -178,6 +418,17 @@ impl RpcMethods {
         let p: RegisterDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
+        for table in &p.tables {
+            if let Some(ref sql) = table.sql {
+                if sql.len() > self.rpc_config.max_sql_length {
+                    return Err(Error::InvalidRequest(format!(
+                        "SQL for table '{}' exceeds maximum length of {} bytes",
+                        table.name, self.rpc_config.max_sql_length
+                    )));
+                }
+            }
+        }
+
         let table_infos = self.session_manager.register_dag(session_id, p.tables)?;
 
         Ok(json!(RegisterDagResult {
@@ -190,7 +441,7 @@ impl RpcMethods {
         let p: RunDagParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
         let targets = p.table_names;
-        let retry_count = p.retry_count;
+        let retry_count = p.retry_count.min(100);
 
         let result = self
             .session_manager
@@ -200,14 +451,7 @@ impl RpcMethods {
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
             succeeded_tables: result.succeeded,
-            failed_tables: result
-                .failed
-                .into_iter()
-                .map(|e| TableErrorInfo {
-                    table: e.table,
-                    error: e.error,
-                })
-                .collect(),
+            failed_tables: result.failed,
             skipped_tables: result.skipped,
         }))
     }
@@ -226,14 +470,7 @@ impl RpcMethods {
         Ok(json!(RunDagResult {
             success: result.all_succeeded(),
             succeeded_tables: result.succeeded,
-            failed_tables: result
-                .failed
-                .into_iter()
-                .map(|e| TableErrorInfo {
-                    table: e.table,
-                    error: e.error,
-                })
-                .collect(),
+            failed_tables: result.failed,
             skipped_tables: result.skipped,
         }))
     }
@@ -269,7 +506,7 @@ impl RpcMethods {
     }
 
     async fn list_tables(&self, params: Value) -> Result<Value> {
-        let p: ListTablesParams = serde_json::from_value(params)?;
+        let p: QueryListTablesParams = serde_json::from_value(params)?;
         let session_id = parse_uuid(&p.session_id)?;
 
         let table_infos = self.session_manager.list_tables(session_id).await?;
@@ -331,7 +568,9 @@ impl RpcMethods {
 
     async fn get_tables_in_dataset(&self, params: Value) -> Result<Value> {
         let (p, session_id) = parse_session_params::<GetTablesInDatasetParams>(params)?;
-        let tables = self.session_manager.get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
+        let tables = self
+            .session_manager
+            .get_tables_in_dataset(session_id, &p.project, &p.dataset)?;
         Ok(json!(GetTablesInDatasetResult { tables }))
     }
 
@@ -568,7 +807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_with_mixed_rows_filters_invalid() {
+    async fn test_insert_with_mixed_rows_returns_error() {
         let methods = create_rpc_methods();
         let session_id = create_session_for_test(&methods).await;
         methods
@@ -591,9 +830,12 @@ mod tests {
                     "rows": [[1], "invalid", [2], null, [3]]
                 }),
             )
-            .await
-            .unwrap();
-        assert_eq!(result["insertedRows"], 3);
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("Mixed row formats"));
     }
 
     #[tokio::test]
@@ -711,7 +953,8 @@ mod tests {
     #[test]
     fn test_clear_dag_params_parsing() {
         let params_json = r#"{"sessionId":"abc"}"#;
-        let params: crate::rpc::types::ClearDagParams = serde_json::from_str(params_json).unwrap();
+        let params: crate::rpc::types::dag::ClearDagParams =
+            serde_json::from_str(params_json).unwrap();
         assert_eq!(params.session_id, "abc");
     }
 
@@ -914,7 +1157,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Executor(_)));
+        assert!(matches!(err, Error::InvalidRequest(_)));
     }
 
     #[tokio::test]
@@ -931,7 +1174,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Executor(_)));
+        assert!(matches!(err, Error::InvalidRequest(_)));
     }
 
     #[tokio::test]
@@ -948,7 +1191,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Executor(_)));
+        assert!(matches!(err, Error::InvalidRequest(_)));
     }
 
     #[tokio::test]
@@ -967,6 +1210,6 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Executor(_)));
+        assert!(matches!(err, Error::InvalidRequest(_)));
     }
 }

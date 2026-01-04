@@ -1,17 +1,53 @@
+use std::time::{Duration, Instant};
+
 use serde_json::Value;
+use tokio::time::timeout;
+use tracing::{debug, instrument};
 
 use crate::error::{Error, Result};
-use crate::executor::ExecutorBackend;
-use crate::utils::json_to_sql_value;
+use crate::executor::converters::json_to_sql_value_into;
+use crate::executor::{ExecutorBackend, INSERT_BATCH_SIZE};
+use crate::validation::quote_identifier;
 
 use super::types::PipelineTable;
 
-pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+#[instrument(skip(executor, table), fields(table_name = %table.name, is_source = table.is_source))]
+pub(super) async fn execute_table_with_timeout(
+    executor: &dyn ExecutorBackend,
+    table: &PipelineTable,
+    timeout_secs: u64,
+) -> Result<()> {
+    let start = Instant::now();
+    let timeout_duration = Duration::from_secs(timeout_secs);
+    let result = timeout(timeout_duration, execute_table_inner(executor, table))
+        .await
+        .map_err(|_| {
+            Error::Executor(format!(
+                "Table '{}' timed out after {} seconds",
+                table.name, timeout_secs
+            ))
+        })?;
+    debug!(elapsed_ms = %start.elapsed().as_millis(), "Table execution completed");
+    result
+}
+
+async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
     if table.is_source {
         create_source_table_standalone(executor, table).await?;
     } else if let Some(sql) = &table.sql {
-        let drop_sql = format!("DROP TABLE IF EXISTS {}", table.name);
-        let _ = executor.execute_statement(&drop_sql).await;
+        let quoted_identifier = quote_identifier(&table.name);
+        let quoted_name_len = quoted_identifier.len() + 2;
+        let mut quoted_name = String::with_capacity(quoted_name_len);
+        quoted_name.push('`');
+        quoted_name.push_str(&quoted_identifier);
+        quoted_name.push('`');
+
+        let mut drop_sql = String::with_capacity(21 + quoted_name_len);
+        drop_sql.push_str("DROP TABLE IF EXISTS ");
+        drop_sql.push_str(&quoted_name);
+        if let Err(e) = executor.execute_statement(&drop_sql).await {
+            tracing::warn!(table = %table.name, error = %e, "Failed to drop table before recreation");
+        }
 
         let query_result = executor.execute_query(sql).await.map_err(|e| {
             Error::Executor(format!(
@@ -21,29 +57,168 @@ pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable
         })?;
 
         if !query_result.columns.is_empty() {
-            let column_types: Vec<String> = query_result
+            let col_defs_len: usize = query_result
                 .columns
                 .iter()
-                .map(|col| format!("{} {}", col.name, col.data_type))
-                .collect();
-
-            let create_sql = format!("CREATE TABLE {} ({})", table.name, column_types.join(", "));
+                .map(|col| col.name.len() + col.data_type.len() + 5)
+                .sum();
+            let mut create_sql = String::with_capacity(15 + quoted_name_len + col_defs_len);
+            create_sql.push_str("CREATE TABLE ");
+            create_sql.push_str(&quoted_name);
+            create_sql.push_str(" (");
+            for (i, col) in query_result.columns.iter().enumerate() {
+                if i > 0 {
+                    create_sql.push_str(", ");
+                }
+                create_sql.push('`');
+                create_sql.push_str(&quote_identifier(&col.name));
+                create_sql.push_str("` ");
+                create_sql.push_str(&col.data_type);
+            }
+            create_sql.push(')');
             executor.execute_statement(&create_sql).await?;
 
             if !query_result.rows.is_empty() {
-                let values: Vec<String> = query_result
-                    .rows
-                    .iter()
-                    .map(|row| {
-                        let vals: Vec<String> = row.iter().map(json_to_sql_value).collect();
-                        format!("({})", vals.join(", "))
-                    })
-                    .collect();
-
-                let insert_sql = format!("INSERT INTO {} VALUES {}", table.name, values.join(", "));
-                executor.execute_statement(&insert_sql).await?;
+                insert_rows_batched(executor, &quoted_name, &query_result.rows).await?;
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn insert_rows_batched(
+    executor: &dyn ExecutorBackend,
+    quoted_name: &str,
+    rows: &[Vec<Value>],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let avg_cols = rows.first().map(|r| r.len()).unwrap_or(4);
+    let prefix_len = 13 + quoted_name.len() + 8;
+    let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
+    sql_buffer.push_str("INSERT INTO ");
+    sql_buffer.push_str(quoted_name);
+    sql_buffer.push_str(" VALUES ");
+
+    let mut rows_in_batch = 0;
+    let mut total_rows_inserted = 0usize;
+
+    for row in rows {
+        if rows_in_batch > 0 {
+            sql_buffer.push_str(", ");
+        }
+        sql_buffer.push('(');
+        for (i, val) in row.iter().enumerate() {
+            if i > 0 {
+                sql_buffer.push_str(", ");
+            }
+            json_to_sql_value_into(val, &mut sql_buffer);
+        }
+        sql_buffer.push(')');
+        rows_in_batch += 1;
+
+        if rows_in_batch >= INSERT_BATCH_SIZE {
+            executor.execute_statement(&sql_buffer).await.map_err(|e| {
+                Error::Executor(format!(
+                    "Batch insert failed ({} rows in batch) after {} rows committed: {}",
+                    rows_in_batch, total_rows_inserted, e
+                ))
+            })?;
+            total_rows_inserted += rows_in_batch;
+            sql_buffer.truncate(prefix_len);
+            rows_in_batch = 0;
+        }
+    }
+
+    if rows_in_batch > 0 {
+        executor.execute_statement(&sql_buffer).await.map_err(|e| {
+            Error::Executor(format!(
+                "Batch insert failed ({} rows in batch) after {} rows committed: {}",
+                rows_in_batch, total_rows_inserted, e
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+async fn insert_source_rows_batched(
+    executor: &dyn ExecutorBackend,
+    quoted_name: &str,
+    table_name: &str,
+    rows: &[Value],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let avg_cols = rows
+        .first()
+        .and_then(|r| r.as_array())
+        .map(|a| a.len())
+        .unwrap_or(4);
+    let prefix_len = 13 + quoted_name.len() + 8;
+    let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
+    sql_buffer.push_str("INSERT INTO ");
+    sql_buffer.push_str(quoted_name);
+    sql_buffer.push_str(" VALUES ");
+
+    let mut rows_in_batch = 0;
+    let mut total_rows_inserted = 0usize;
+
+    for (idx, row) in rows.iter().enumerate() {
+        if let Value::Array(arr) = row {
+            if rows_in_batch > 0 {
+                sql_buffer.push_str(", ");
+            }
+            sql_buffer.push('(');
+            for (i, val) in arr.iter().enumerate() {
+                if i > 0 {
+                    sql_buffer.push_str(", ");
+                }
+                json_to_sql_value_into(val, &mut sql_buffer);
+            }
+            sql_buffer.push(')');
+            rows_in_batch += 1;
+
+            if rows_in_batch >= INSERT_BATCH_SIZE {
+                executor.execute_statement(&sql_buffer).await.map_err(|e| {
+                    Error::Executor(format!(
+                        "Batch insert failed for table '{}' after {} rows successfully inserted: {}",
+                        table_name, total_rows_inserted, e
+                    ))
+                })?;
+                total_rows_inserted += rows_in_batch;
+                sql_buffer.truncate(prefix_len);
+                rows_in_batch = 0;
+            }
+        } else {
+            return Err(Error::Executor(format!(
+                "Invalid row format at index {} in table '{}': expected array, got {}",
+                idx,
+                table_name,
+                match row {
+                    Value::Object(_) => "object",
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    _ => "unknown",
+                }
+            )));
+        }
+    }
+
+    if rows_in_batch > 0 {
+        executor.execute_statement(&sql_buffer).await.map_err(|e| {
+            Error::Executor(format!(
+                "Batch insert failed for table '{}' after {} rows successfully inserted: {}",
+                table_name, total_rows_inserted, e
+            ))
+        })?;
     }
 
     Ok(())
@@ -54,36 +229,42 @@ async fn create_source_table_standalone(
     table: &PipelineTable,
 ) -> Result<()> {
     if let Some(schema) = &table.schema {
-        let columns: Vec<String> = schema
-            .iter()
-            .map(|col| format!("{} {}", col.name, col.column_type))
-            .collect();
+        if schema.is_empty() {
+            return Err(Error::Executor(format!(
+                "Source table '{}' has empty schema",
+                table.name
+            )));
+        }
 
-        let create_sql = format!(
-            "CREATE TABLE IF NOT EXISTS {} ({})",
-            table.name,
-            columns.join(", ")
-        );
+        let quoted_identifier = quote_identifier(&table.name);
+        let quoted_name_len = quoted_identifier.len() + 2;
+        let mut quoted_name = String::with_capacity(quoted_name_len);
+        quoted_name.push('`');
+        quoted_name.push_str(&quoted_identifier);
+        quoted_name.push('`');
+
+        let col_defs_len: usize = schema
+            .iter()
+            .map(|col| col.name.len() + col.column_type.as_str().len() + 5)
+            .sum();
+        let mut create_sql = String::with_capacity(27 + quoted_name_len + col_defs_len);
+        create_sql.push_str("CREATE TABLE IF NOT EXISTS ");
+        create_sql.push_str(&quoted_name);
+        create_sql.push_str(" (");
+        for (i, col) in schema.iter().enumerate() {
+            if i > 0 {
+                create_sql.push_str(", ");
+            }
+            create_sql.push('`');
+            create_sql.push_str(&quote_identifier(&col.name));
+            create_sql.push_str("` ");
+            create_sql.push_str(col.column_type.as_str());
+        }
+        create_sql.push(')');
         executor.execute_statement(&create_sql).await?;
 
         if !table.rows.is_empty() {
-            let values: Vec<String> = table
-                .rows
-                .iter()
-                .filter_map(|row| {
-                    if let Value::Array(arr) = row {
-                        let vals: Vec<String> = arr.iter().map(json_to_sql_value).collect();
-                        Some(format!("({})", vals.join(", ")))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !values.is_empty() {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", table.name, values.join(", "));
-                executor.execute_statement(&insert_sql).await?;
-            }
+            insert_source_rows_batched(executor, &quoted_name, &table.name, &table.rows).await?;
         }
     }
     Ok(())
@@ -96,6 +277,12 @@ mod tests {
     use crate::executor::YachtSqlExecutor;
     use serde_json::json;
     use std::sync::Arc;
+
+    const TEST_TIMEOUT_SECS: u64 = 300;
+
+    async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+        execute_table_with_timeout(executor, table, TEST_TIMEOUT_SECS).await
+    }
 
     fn make_source_table(name: &str, schema: Vec<ColumnDef>, rows: Vec<Value>) -> PipelineTable {
         PipelineTable {
@@ -252,22 +439,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_source_table_non_array_rows_filtered() {
+    async fn test_execute_source_table_non_array_rows_returns_error() {
         let executor = create_executor();
         let table = make_source_table(
             "mixed_rows",
             vec![ColumnDef::int64("id")],
-            vec![
-                json!([1]),
-                json!({"not": "array"}),
-                json!([2]),
-                json!("string"),
-                json!([3]),
-            ],
+            vec![json!([1]), json!({"not": "array"}), json!([2])],
         );
 
         let result = execute_table(executor.as_ref(), &table).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::Executor(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid row format"));
+        assert!(msg.contains("index 1"));
     }
 
     #[tokio::test]
@@ -282,7 +468,7 @@ mod tests {
                 ColumnDef::bool("bool_col"),
             ],
             vec![
-                json!([42, 3.14, "hello", true]),
+                json!([42, 1.234, "hello", true]),
                 json!([null, null, null, false]),
             ],
         );

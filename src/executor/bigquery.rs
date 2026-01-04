@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use google_cloud_bigquery::client::{Client, ClientConfig};
 use google_cloud_bigquery::http::job::cancel::CancelJobRequest;
@@ -16,6 +18,12 @@ use super::yachtsql::ColumnInfo;
 use super::{ExecutorBackend, ExecutorMode, QueryResult};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
+
+const JOB_POLL_INITIAL_INTERVAL_SECS: u64 = 1;
+const JOB_POLL_MAX_INTERVAL_SECS: u64 = 30;
+const JOB_TIMEOUT_SECS: u64 = 1800;
+const CANCELLATION_VERIFICATION_DELAY_SECS: u64 = 1;
+const CANCELLATION_VERIFICATION_RETRIES: u8 = 3;
 
 pub struct BigQueryExecutor {
     client: Client,
@@ -51,9 +59,19 @@ impl BigQueryExecutor {
             .map_err(|e| Error::Executor(format!("Failed to create BigQuery client: {}", e)))?;
 
         let dataset_id = std::env::var("BQ_DATASET").ok();
-        let query_timeout_ms = std::env::var("BQ_QUERY_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let query_timeout_ms =
+            std::env::var("BQ_QUERY_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| match s.parse() {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        tracing::warn!(
+                            value = %s,
+                            "Invalid BQ_QUERY_TIMEOUT_MS value, ignoring"
+                        );
+                        None
+                    }
+                });
 
         Ok(Self {
             client,
@@ -163,9 +181,9 @@ impl BigQueryExecutor {
         }
 
         let start = std::time::Instant::now();
-        let mut interval = std::time::Duration::from_secs(1);
-        let max_interval = std::time::Duration::from_secs(30);
-        let timeout = std::time::Duration::from_secs(1800);
+        let mut interval = Duration::from_secs(JOB_POLL_INITIAL_INTERVAL_SECS);
+        let max_interval = Duration::from_secs(JOB_POLL_MAX_INTERVAL_SECS);
+        let timeout = Duration::from_secs(JOB_TIMEOUT_SECS);
         let deadline = start + timeout;
         let mut poll_count = 0u32;
 
@@ -191,6 +209,30 @@ impl BigQueryExecutor {
                 );
                 if let Err(e) = self.cancel_job(job_id).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Cancellation failed");
+                } else {
+                    for retry in 1..=CANCELLATION_VERIFICATION_RETRIES {
+                        tokio::time::sleep(Duration::from_secs(
+                            CANCELLATION_VERIFICATION_DELAY_SECS,
+                        ))
+                        .await;
+                        let get_request = GetJobRequest { location: None };
+                        match self
+                            .client
+                            .job()
+                            .get(&self.project_id, job_id, &get_request)
+                            .await
+                        {
+                            Ok(status) if status.status.state == JobState::Done => {
+                                tracing::info!(job_id = %job_id, "Job confirmed cancelled/completed");
+                                break;
+                            }
+                            Ok(_) if retry == CANCELLATION_VERIFICATION_RETRIES => {
+                                tracing::error!(job_id = %job_id, "Job still running after cancellation");
+                            }
+                            Err(_) => break,
+                            _ => {}
+                        }
+                    }
                 }
                 return Err(Error::Timeout {
                     job_id: job_id.to_string(),
@@ -209,8 +251,8 @@ impl BigQueryExecutor {
             if status.status.state == JobState::Done {
                 if let Some(err) = &status.status.error_result {
                     return Err(Error::Executor(format!(
-                        "Load job failed: {:?}",
-                        err.message
+                        "Load job failed: {}",
+                        err.message.as_deref().unwrap_or("Unknown error")
                     )));
                 }
 
@@ -224,10 +266,13 @@ impl BigQueryExecutor {
                 let rows = status
                     .statistics
                     .and_then(|s| s.load)
-                    .and_then(|l| l.output_rows)
-                    .unwrap_or(0) as u64;
+                    .and_then(|l| l.output_rows);
 
-                return Ok(rows);
+                if rows.is_none() {
+                    tracing::warn!(job_id = %job_id, "BigQuery job completed but statistics are missing, defaulting to 0 rows");
+                }
+
+                return Ok(rows.unwrap_or(0) as u64);
             }
 
             tokio::time::sleep(interval).await;
@@ -248,9 +293,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery query failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery query failed: {}", e)))?;
 
         let columns: Vec<ColumnInfo> = response
             .schema
@@ -260,7 +303,7 @@ impl BigQueryExecutor {
                     .iter()
                     .map(|field| ColumnInfo {
                         name: field.name.clone(),
-                        data_type: bq_type_to_string(&field.data_type),
+                        data_type: bq_type_to_string(&field.data_type).to_owned(),
                     })
                     .collect()
             })
@@ -295,9 +338,7 @@ impl BigQueryExecutor {
             .job()
             .query(&self.project_id, &request)
             .await
-            .map_err(|e| {
-                Error::Executor(format!("BigQuery statement failed: {}\n\nSQL: {}", e, sql))
-            })?;
+            .map_err(|e| Error::Executor(format!("BigQuery statement failed: {}", e)))?;
 
         Ok(response.num_dml_affected_rows.unwrap_or(0) as u64)
     }
@@ -327,22 +368,22 @@ impl ExecutorBackend for BigQueryExecutor {
     }
 }
 
-fn bq_type_to_string(field_type: &TableFieldType) -> String {
+fn bq_type_to_string(field_type: &TableFieldType) -> &'static str {
     match field_type {
-        TableFieldType::String => "STRING".to_string(),
-        TableFieldType::Bytes => "BYTES".to_string(),
-        TableFieldType::Integer | TableFieldType::Int64 => "INT64".to_string(),
-        TableFieldType::Float | TableFieldType::Float64 => "FLOAT64".to_string(),
-        TableFieldType::Boolean | TableFieldType::Bool => "BOOLEAN".to_string(),
-        TableFieldType::Timestamp => "TIMESTAMP".to_string(),
-        TableFieldType::Record | TableFieldType::Struct => "STRUCT".to_string(),
-        TableFieldType::Date => "DATE".to_string(),
-        TableFieldType::Time => "TIME".to_string(),
-        TableFieldType::Datetime => "DATETIME".to_string(),
-        TableFieldType::Numeric | TableFieldType::Decimal => "NUMERIC".to_string(),
-        TableFieldType::Bignumeric | TableFieldType::Bigdecimal => "BIGNUMERIC".to_string(),
-        TableFieldType::Interval => "INTERVAL".to_string(),
-        TableFieldType::Json => "JSON".to_string(),
+        TableFieldType::String => "STRING",
+        TableFieldType::Bytes => "BYTES",
+        TableFieldType::Integer | TableFieldType::Int64 => "INT64",
+        TableFieldType::Float | TableFieldType::Float64 => "FLOAT64",
+        TableFieldType::Boolean | TableFieldType::Bool => "BOOLEAN",
+        TableFieldType::Timestamp => "TIMESTAMP",
+        TableFieldType::Record | TableFieldType::Struct => "STRUCT",
+        TableFieldType::Date => "DATE",
+        TableFieldType::Time => "TIME",
+        TableFieldType::Datetime => "DATETIME",
+        TableFieldType::Numeric | TableFieldType::Decimal => "NUMERIC",
+        TableFieldType::Bignumeric | TableFieldType::Bigdecimal => "BIGNUMERIC",
+        TableFieldType::Interval => "INTERVAL",
+        TableFieldType::Json => "JSON",
     }
 }
 
@@ -362,7 +403,10 @@ fn string_to_bq_type(type_str: &str) -> TableFieldType {
         "INTERVAL" => TableFieldType::Interval,
         "JSON" => TableFieldType::Json,
         "STRUCT" | "RECORD" => TableFieldType::Struct,
-        _ => TableFieldType::String,
+        other => {
+            tracing::warn!(type_str = %other, "Unknown BigQuery type, defaulting to STRING");
+            TableFieldType::String
+        }
     }
 }
 
