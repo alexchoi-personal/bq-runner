@@ -284,6 +284,16 @@ impl Config {
                 "auth.enabled is true but no api_key configured".into(),
             ));
         }
+        if self.session.max_concurrency == 0 {
+            return Err(Error::InvalidRequest(
+                "session.max_concurrency must be greater than 0".into(),
+            ));
+        }
+        if self.session.max_sessions == 0 {
+            return Err(Error::InvalidRequest(
+                "session.max_sessions must be greater than 0".into(),
+            ));
+        }
 
         Ok(())
     }
