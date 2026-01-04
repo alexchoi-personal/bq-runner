@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
+use ahash::AHasher;
 use parking_lot::Mutex;
 use sqlparser::ast::{
     Expr, Query, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, With,
@@ -62,7 +62,8 @@ impl ShardedParseCache {
 static PARSE_CACHE: LazyLock<ShardedParseCache> = LazyLock::new(ShardedParseCache::new);
 
 fn hash_sql(sql: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    let mut hasher = AHasher::default();
     sql.hash(&mut hasher);
     hasher.finish()
 }
@@ -104,17 +105,23 @@ pub fn extract_dependencies(
         collect_tables_from_statement(statement, &mut referenced_tables);
     }
 
-    let mut deps: Vec<String> = referenced_tables
-        .into_iter()
-        .filter_map(|t| {
-            let upper = t.to_uppercase();
-            if !cte_names.contains(&upper) {
-                table_name_lookup.get(&upper).cloned()
-            } else {
-                None
+    let mut deps: Vec<String> = Vec::with_capacity(referenced_tables.len());
+    let mut upper_buf = String::new();
+
+    for t in referenced_tables {
+        upper_buf.clear();
+        upper_buf.reserve(t.len());
+        for c in t.chars() {
+            upper_buf.extend(c.to_uppercase());
+        }
+
+        let is_cte = cte_names.contains(&upper_buf);
+        if !is_cte {
+            if let Some(canonical) = table_name_lookup.get(&upper_buf) {
+                deps.push(canonical.clone());
             }
-        })
-        .collect();
+        }
+    }
 
     deps.sort();
     deps.dedup();

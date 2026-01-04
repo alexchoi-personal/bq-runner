@@ -40,6 +40,7 @@ tower = "0.5"
 tower_governor = "0.4"
 governor = "0.8"
 subtle = "2.6.1"
+ahash = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

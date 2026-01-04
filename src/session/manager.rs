@@ -12,7 +12,7 @@ use crate::config::{SecurityConfig, SessionConfig};
 use crate::domain::{DagTableDef, DagTableDetail, DagTableInfo, ParquetTableInfo, SqlTableInfo};
 use crate::error::{Error, Result};
 use crate::executor::{
-    BigQueryExecutor, ExecutorBackend, ExecutorMode, MockExecutorExt, QueryResult, YachtSqlExecutor,
+    BigQueryExecutor, ExecutorBackend, ExecutorMode, QueryResult, YachtSqlExecutor,
 };
 use crate::loader;
 use crate::metrics::{
@@ -71,7 +71,6 @@ impl SessionManagerBuilder {
 
 struct Session {
     executor: Arc<dyn ExecutorBackend>,
-    mock_executor: Option<Arc<YachtSqlExecutor>>,
     pipeline: Arc<Pipeline>,
     last_accessed_nanos: AtomicU64,
     created_at: Instant,
@@ -80,13 +79,12 @@ struct Session {
 impl Session {
     fn new(
         executor: Arc<dyn ExecutorBackend>,
-        mock_executor: Option<Arc<YachtSqlExecutor>>,
         max_concurrency: usize,
+        table_timeout_secs: u64,
     ) -> Self {
         Self {
             executor,
-            mock_executor,
-            pipeline: Arc::new(Pipeline::with_max_concurrency(max_concurrency)),
+            pipeline: Arc::new(Pipeline::with_config(max_concurrency, table_timeout_secs)),
             last_accessed_nanos: AtomicU64::new(0),
             created_at: Instant::now(),
         }
@@ -193,18 +191,6 @@ impl SessionManager {
         Ok(Arc::clone(&session.executor))
     }
 
-    fn get_mock_executor(&self, session_id: Uuid) -> Result<Arc<YachtSqlExecutor>> {
-        let sessions = self.sessions.read();
-        let session = sessions
-            .get(&session_id)
-            .ok_or(Error::SessionNotFound(session_id))?;
-        session.touch();
-        session
-            .mock_executor
-            .clone()
-            .ok_or_else(|| Error::Executor("This operation is only available in mock mode".into()))
-    }
-
     fn with_session<F, T>(&self, session_id: Uuid, f: F) -> Result<T>
     where
         F: FnOnce(&Session) -> Result<T>,
@@ -241,16 +227,16 @@ impl SessionManager {
         }
 
         let session_id = Uuid::new_v4();
-        let (executor, mock_executor): (Arc<dyn ExecutorBackend>, Option<Arc<YachtSqlExecutor>>) =
-            match self.mode {
-                ExecutorMode::Mock => {
-                    let mock = Arc::new(YachtSqlExecutor::new());
-                    (Arc::clone(&mock) as Arc<dyn ExecutorBackend>, Some(mock))
-                }
-                ExecutorMode::BigQuery => (Arc::new(BigQueryExecutor::new().await?), None),
-            };
+        let executor: Arc<dyn ExecutorBackend> = match self.mode {
+            ExecutorMode::Mock => Arc::new(YachtSqlExecutor::new()),
+            ExecutorMode::BigQuery => Arc::new(BigQueryExecutor::new().await?),
+        };
 
-        let session = Session::new(executor, mock_executor, self.session_config.max_concurrency);
+        let session = Session::new(
+            executor,
+            self.session_config.max_concurrency,
+            self.session_config.table_timeout_secs,
+        );
 
         let session_count = {
             let mut sessions = self.sessions.write();
@@ -390,8 +376,9 @@ impl SessionManager {
                 .ok_or(Error::SessionNotFound(session_id))?;
             let pipeline = std::mem::replace(
                 &mut session.pipeline,
-                Arc::new(Pipeline::with_max_concurrency(
+                Arc::new(Pipeline::with_config(
                     self.session_config.max_concurrency,
+                    self.session_config.table_timeout_secs,
                 )),
             );
             (Arc::clone(&session.executor), pipeline)
@@ -469,7 +456,7 @@ impl SessionManager {
     }
 
     pub async fn list_tables(&self, session_id: Uuid) -> Result<Vec<(String, u64)>> {
-        let executor = self.get_mock_executor(session_id)?;
+        let executor = self.get_executor(session_id)?;
         executor.list_tables().await
     }
 
@@ -478,29 +465,28 @@ impl SessionManager {
         session_id: Uuid,
         table_name: &str,
     ) -> Result<(Vec<(String, String)>, u64)> {
-        let executor = self.get_mock_executor(session_id)?;
+        let executor = self.get_executor(session_id)?;
         executor.describe_table(table_name).await
     }
 
     pub fn set_default_project(&self, session_id: Uuid, project: Option<String>) -> Result<()> {
-        let executor = self.get_mock_executor(session_id)?;
-        executor.set_default_project(project);
-        Ok(())
+        let executor = self.get_executor(session_id)?;
+        executor.set_default_project(project)
     }
 
     pub fn get_default_project(&self, session_id: Uuid) -> Result<Option<String>> {
-        let executor = self.get_mock_executor(session_id)?;
-        Ok(executor.get_default_project())
+        let executor = self.get_executor(session_id)?;
+        executor.get_default_project()
     }
 
     pub fn get_projects(&self, session_id: Uuid) -> Result<Vec<String>> {
-        let executor = self.get_mock_executor(session_id)?;
-        Ok(executor.get_projects())
+        let executor = self.get_executor(session_id)?;
+        executor.get_projects()
     }
 
     pub fn get_datasets(&self, session_id: Uuid, project: &str) -> Result<Vec<String>> {
-        let executor = self.get_mock_executor(session_id)?;
-        Ok(executor.get_datasets(project))
+        let executor = self.get_executor(session_id)?;
+        executor.get_datasets(project)
     }
 
     pub fn get_tables_in_dataset(
@@ -509,8 +495,8 @@ impl SessionManager {
         project: &str,
         dataset: &str,
     ) -> Result<Vec<String>> {
-        let executor = self.get_mock_executor(session_id)?;
-        Ok(executor.get_tables_in_dataset(project, dataset))
+        let executor = self.get_executor(session_id)?;
+        executor.get_tables_in_dataset(project, dataset)
     }
 
     pub fn load_sql_directory(
@@ -1462,6 +1448,7 @@ mod tests {
             session_timeout_secs: 3600,
             cleanup_interval_secs: 60,
             max_concurrency: 8,
+            table_timeout_secs: 300,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,
@@ -1492,6 +1479,7 @@ mod tests {
             session_timeout_secs: 0,
             cleanup_interval_secs: 60,
             max_concurrency: 8,
+            table_timeout_secs: 300,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,
@@ -1525,6 +1513,7 @@ mod tests {
             session_timeout_secs: 1800,
             cleanup_interval_secs: 30,
             max_concurrency: 8,
+            table_timeout_secs: 300,
         };
         let manager = SessionManager::with_full_config(
             ExecutorMode::Mock,

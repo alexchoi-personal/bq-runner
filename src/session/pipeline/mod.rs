@@ -19,7 +19,9 @@ pub(crate) use types::PipelineTable;
 use types::{StreamState, DEFAULT_MAX_CONCURRENCY};
 
 use dependency::extract_dependencies;
-use execution::execute_table;
+use execution::execute_table_with_timeout;
+
+const DEFAULT_TABLE_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Clone)]
 pub struct Pipeline {
@@ -27,19 +29,25 @@ pub struct Pipeline {
     table_status: HashMap<String, TableStatus>,
     table_name_lookup: HashMap<String, String>,
     max_concurrency: usize,
+    table_timeout_secs: u64,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
-        Self::with_max_concurrency(DEFAULT_MAX_CONCURRENCY)
+        Self::with_config(DEFAULT_MAX_CONCURRENCY, DEFAULT_TABLE_TIMEOUT_SECS)
     }
 
     pub fn with_max_concurrency(max_concurrency: usize) -> Self {
+        Self::with_config(max_concurrency, DEFAULT_TABLE_TIMEOUT_SECS)
+    }
+
+    pub fn with_config(max_concurrency: usize, table_timeout_secs: u64) -> Self {
         Self {
             tables: HashMap::new(),
             table_status: HashMap::new(),
             table_name_lookup: HashMap::new(),
             max_concurrency,
+            table_timeout_secs,
         }
     }
 
@@ -335,6 +343,7 @@ impl Pipeline {
             ready
         };
 
+        let timeout_secs = self.table_timeout_secs;
         for name in ready_to_spawn {
             let executor = Arc::clone(executor);
             let table = self.tables.get(&name).cloned();
@@ -342,7 +351,7 @@ impl Pipeline {
 
             tokio::spawn(async move {
                 let res = if let Some(table) = table {
-                    execute_table(executor.as_ref(), &table).await
+                    execute_table_with_timeout(executor.as_ref(), &table, timeout_secs).await
                 } else {
                     Err(Error::InvalidRequest(format!("Table not found: {}", name)))
                 };
@@ -391,7 +400,7 @@ impl Pipeline {
             .tables
             .get(name)
             .ok_or_else(|| Error::InvalidRequest(format!("Table not found: {}", name)))?;
-        execute_table(executor, table).await
+        execute_table_with_timeout(executor, table, self.table_timeout_secs).await
     }
 
     fn topological_sort_levels(&self, queries: &HashSet<String>) -> Result<Vec<Vec<String>>> {

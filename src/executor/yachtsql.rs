@@ -15,19 +15,6 @@ use crate::validation::{open_file_secure, quote_identifier};
 
 const PARQUET_CHANNEL_BUFFER: usize = 4;
 
-pub(crate) trait MockExecutorExt {
-    fn list_tables(&self) -> impl std::future::Future<Output = Result<Vec<(String, u64)>>> + Send;
-    fn describe_table(
-        &self,
-        table_name: &str,
-    ) -> impl std::future::Future<Output = Result<(Vec<(String, String)>, u64)>> + Send;
-    fn set_default_project(&self, project: Option<String>);
-    fn get_default_project(&self) -> Option<String>;
-    fn get_projects(&self) -> Vec<String>;
-    fn get_datasets(&self, project: &str) -> Vec<String>;
-    fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Vec<String>;
-}
-
 #[derive(Clone)]
 pub struct YachtSqlExecutor {
     executor: AsyncQueryExecutor,
@@ -241,9 +228,7 @@ impl ExecutorBackend for YachtSqlExecutor {
     ) -> Result<u64> {
         self.load_parquet_impl(table_name, path, schema).await
     }
-}
 
-impl MockExecutorExt for YachtSqlExecutor {
     async fn list_tables(&self) -> Result<Vec<(String, u64)>> {
         let result = self.execute_query(
             "SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = 'public'"
@@ -293,26 +278,28 @@ impl MockExecutorExt for YachtSqlExecutor {
         Ok((schema, row_count))
     }
 
-    fn set_default_project(&self, project: Option<String>) {
+    fn set_default_project(&self, project: Option<String>) -> Result<()> {
         self.executor.catalog().set_default_project(project);
+        Ok(())
     }
 
-    fn get_default_project(&self) -> Option<String> {
-        self.executor.catalog().get_default_project()
+    fn get_default_project(&self) -> Result<Option<String>> {
+        Ok(self.executor.catalog().get_default_project())
     }
 
-    fn get_projects(&self) -> Vec<String> {
-        self.executor.catalog().get_projects()
+    fn get_projects(&self) -> Result<Vec<String>> {
+        Ok(self.executor.catalog().get_projects())
     }
 
-    fn get_datasets(&self, project: &str) -> Vec<String> {
-        self.executor.catalog().get_datasets(project)
+    fn get_datasets(&self, project: &str) -> Result<Vec<String>> {
+        Ok(self.executor.catalog().get_datasets(project))
     }
 
-    fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Vec<String> {
-        self.executor
+    fn get_tables_in_dataset(&self, project: &str, dataset: &str) -> Result<Vec<String>> {
+        Ok(self
+            .executor
             .catalog()
-            .get_tables_in_dataset(project, dataset)
+            .get_tables_in_dataset(project, dataset))
     }
 }
 
@@ -397,13 +384,13 @@ mod tests {
     #[tokio::test]
     async fn test_yachtsql_executor_new() {
         let executor = YachtSqlExecutor::new();
-        assert!(executor.get_default_project().is_none());
+        assert!(executor.get_default_project().unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_yachtsql_executor_default() {
         let executor = YachtSqlExecutor::default();
-        assert!(executor.get_default_project().is_none());
+        assert!(executor.get_default_project().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -485,32 +472,34 @@ mod tests {
     #[tokio::test]
     async fn test_set_get_default_project() {
         let executor = YachtSqlExecutor::new();
-        assert!(executor.get_default_project().is_none());
-        executor.set_default_project(Some("my-project".to_string()));
-        let project = executor.get_default_project();
+        assert!(executor.get_default_project().unwrap().is_none());
+        executor
+            .set_default_project(Some("my-project".to_string()))
+            .unwrap();
+        let project = executor.get_default_project().unwrap();
         assert!(project.is_some());
-        executor.set_default_project(None);
-        assert!(executor.get_default_project().is_none());
+        executor.set_default_project(None).unwrap();
+        assert!(executor.get_default_project().unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_get_projects() {
         let executor = YachtSqlExecutor::new();
-        let projects = executor.get_projects();
+        let projects = executor.get_projects().unwrap();
         assert!(projects.is_empty(), "New executor should have no projects");
     }
 
     #[tokio::test]
     async fn test_get_datasets() {
         let executor = YachtSqlExecutor::new();
-        let datasets = executor.get_datasets("some_project");
+        let datasets = executor.get_datasets("some_project").unwrap();
         assert!(datasets.is_empty(), "New executor should have no datasets");
     }
 
     #[tokio::test]
     async fn test_get_tables_in_dataset() {
         let executor = YachtSqlExecutor::new();
-        let tables = executor.get_tables_in_dataset("proj", "dataset");
+        let tables = executor.get_tables_in_dataset("proj", "dataset").unwrap();
         assert!(tables.is_empty(), "New executor should have no tables");
     }
 

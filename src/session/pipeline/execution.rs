@@ -9,15 +9,19 @@ use crate::executor::converters::json_to_sql_value_into;
 use crate::executor::{ExecutorBackend, INSERT_BATCH_SIZE};
 use crate::validation::quote_identifier;
 
-use super::types::{PipelineTable, DEFAULT_TABLE_TIMEOUT_SECS};
+use super::types::PipelineTable;
 
 #[instrument(skip(executor, table), fields(table_name = %table.name, is_source = table.is_source))]
-pub async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+pub(super) async fn execute_table_with_timeout(
+    executor: &dyn ExecutorBackend,
+    table: &PipelineTable,
+    timeout_secs: u64,
+) -> Result<()> {
     let start = Instant::now();
-    let timeout_duration = Duration::from_secs(DEFAULT_TABLE_TIMEOUT_SECS);
+    let timeout_duration = Duration::from_secs(timeout_secs);
     let result = timeout(timeout_duration, execute_table_inner(executor, table))
         .await
-        .map_err(|_| Error::RequestTimeout(DEFAULT_TABLE_TIMEOUT_SECS))?;
+        .map_err(|_| Error::RequestTimeout(timeout_secs))?;
     debug!(elapsed_ms = %start.elapsed().as_millis(), "Table execution completed");
     result
 }
@@ -268,6 +272,12 @@ mod tests {
     use crate::executor::YachtSqlExecutor;
     use serde_json::json;
     use std::sync::Arc;
+
+    const TEST_TIMEOUT_SECS: u64 = 300;
+
+    async fn execute_table(executor: &dyn ExecutorBackend, table: &PipelineTable) -> Result<()> {
+        execute_table_with_timeout(executor, table, TEST_TIMEOUT_SECS).await
+    }
 
     fn make_source_table(name: &str, schema: Vec<ColumnDef>, rows: Vec<Value>) -> PipelineTable {
         PipelineTable {

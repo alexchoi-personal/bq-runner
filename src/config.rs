@@ -59,6 +59,8 @@ pub struct SessionConfig {
     pub cleanup_interval_secs: u64,
     #[serde(default = "default_max_concurrency")]
     pub max_concurrency: usize,
+    #[serde(default = "default_table_timeout_secs")]
+    pub table_timeout_secs: u64,
 }
 
 fn default_max_sessions() -> usize {
@@ -66,15 +68,19 @@ fn default_max_sessions() -> usize {
 }
 
 fn default_session_timeout_secs() -> u64 {
-    3600 // 1 hour
+    3600
 }
 
 fn default_cleanup_interval_secs() -> u64 {
-    60 // 1 minute
+    60
 }
 
 fn default_max_concurrency() -> usize {
     8
+}
+
+fn default_table_timeout_secs() -> u64 {
+    300
 }
 
 impl Default for SessionConfig {
@@ -84,6 +90,7 @@ impl Default for SessionConfig {
             session_timeout_secs: default_session_timeout_secs(),
             cleanup_interval_secs: default_cleanup_interval_secs(),
             max_concurrency: default_max_concurrency(),
+            table_timeout_secs: default_table_timeout_secs(),
         }
     }
 }
@@ -225,6 +232,15 @@ impl Config {
             match val.parse() {
                 Ok(n) => config.session.max_concurrency = n,
                 Err(_) => warn!("Invalid BQ_MAX_CONCURRENCY value '{}', using default", val),
+            }
+        }
+        if let Ok(val) = std::env::var("BQ_TABLE_TIMEOUT_SECS") {
+            match val.parse() {
+                Ok(n) => config.session.table_timeout_secs = n,
+                Err(_) => warn!(
+                    "Invalid BQ_TABLE_TIMEOUT_SECS value '{}', using default",
+                    val
+                ),
             }
         }
         if let Ok(val) = std::env::var("BQ_RUNNER_REQUEST_TIMEOUT_SECS") {

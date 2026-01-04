@@ -14,7 +14,7 @@ pub(crate) fn json_to_sql_value_into(val: &Value, buf: &mut String) {
     match val {
         Value::Null => buf.push_str("NULL"),
         Value::Bool(b) => {
-            let _ = write!(buf, "{}", b);
+            buf.push_str(if *b { "true" } else { "false" });
         }
         Value::Number(n) => {
             let _ = write!(buf, "{}", n);

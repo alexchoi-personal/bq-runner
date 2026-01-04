@@ -28,7 +28,6 @@ impl PipelineResult {
 }
 
 pub(super) const DEFAULT_MAX_CONCURRENCY: usize = 8;
-pub(super) const DEFAULT_TABLE_TIMEOUT_SECS: u64 = 300;
 
 pub(super) struct StreamState {
     pub pending_deps: HashMap<String, HashSet<String>>,
