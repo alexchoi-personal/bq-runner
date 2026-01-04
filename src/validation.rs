@@ -12,8 +12,6 @@ use sqlparser::parser::Parser;
 use crate::config::SecurityConfig;
 use crate::error::{Error, Result};
 
-pub use crate::config::SecurityConfig as SecurityConfigReexport;
-
 static TABLE_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
         .expect("TABLE_NAME_REGEX pattern is valid")

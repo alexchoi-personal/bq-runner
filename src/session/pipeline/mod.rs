@@ -245,18 +245,17 @@ impl Pipeline {
         executor: Arc<dyn ExecutorBackend>,
         subset: HashSet<String>,
     ) -> Result<PipelineResult> {
-        let all_tables: Vec<String> = subset.into_iter().collect();
-        let total_count = all_tables.len();
+        let total_count = subset.len();
 
         let mut pending_deps: HashMap<String, HashSet<String>> =
-            HashMap::with_capacity(all_tables.len());
-        for name in &all_tables {
+            HashMap::with_capacity(subset.len());
+        for name in &subset {
             let table_deps = self.tables.get(name).map(|t| &t.dependencies);
             let dep_count = table_deps.map(|d| d.len()).unwrap_or(0);
             let mut relevant_deps = HashSet::with_capacity(dep_count);
             if let Some(deps) = table_deps {
                 for d in deps {
-                    if all_tables.contains(d) {
+                    if subset.contains(d) {
                         relevant_deps.insert(d.clone());
                     }
                 }
