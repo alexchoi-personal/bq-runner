@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use yachtsql::{AsyncQueryExecutor, Table};
 
 use super::converters::{arrow_value_to_sql_into, datatype_to_bq_type, yacht_value_into_json};
-use super::{ExecutorBackend, ExecutorMode};
+use super::{ExecutorBackend, ExecutorMode, INSERT_BATCH_SIZE};
 use crate::domain::ColumnDef;
 use crate::error::{Error, Result};
 use crate::validation::{open_file_secure, quote_identifier};
@@ -38,26 +38,6 @@ impl YachtSqlExecutor {
         Self {
             executor: AsyncQueryExecutor::new(),
         }
-    }
-
-    pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        let result = self
-            .executor
-            .execute_sql(sql)
-            .await
-            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
-
-        table_to_query_result(&result)
-    }
-
-    pub async fn execute_statement(&self, sql: &str) -> Result<u64> {
-        let result = self
-            .executor
-            .execute_sql(sql)
-            .await
-            .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, sql)))?;
-
-        Ok(result.row_count() as u64)
     }
 
     async fn load_parquet_impl(
@@ -97,7 +77,6 @@ impl YachtSqlExecutor {
             .map_err(|e| Error::Executor(format!("{}\n\nSQL: {}", e, create_sql)))?;
 
         let mut total_rows = 0u64;
-        const INSERT_BATCH_SIZE: usize = 1000;
 
         while let Some(batch_result) = rx.recv().await {
             let batch = batch_result?;

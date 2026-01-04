@@ -11,6 +11,8 @@ pub(crate) use self::yachtsql::MockExecutorExt;
 pub use self::yachtsql::{ColumnInfo, QueryResult, YachtSqlExecutor};
 pub use crate::domain::ColumnDef;
 
+pub(crate) const INSERT_BATCH_SIZE: usize = 1000;
+
 #[cfg(test)]
 pub use self::test_counting::TestCountingExecutor;
 
@@ -24,11 +26,29 @@ pub enum ExecutorMode {
     BigQuery,
 }
 
+/// Backend trait for SQL execution against different database engines.
+///
+/// Implementors must be thread-safe (`Send + Sync`) as they may be shared
+/// across async tasks.
 #[async_trait]
 pub trait ExecutorBackend: Send + Sync {
+    /// Returns the execution mode (Mock or BigQuery).
     fn mode(&self) -> ExecutorMode;
+
+    /// Executes a SQL query that returns rows (SELECT statements).
+    ///
+    /// Returns the query result containing column metadata and row data.
     async fn execute_query(&self, sql: &str) -> Result<QueryResult>;
+
+    /// Executes a SQL statement that modifies data (INSERT, UPDATE, DELETE, DDL).
+    ///
+    /// Returns the number of affected rows.
     async fn execute_statement(&self, sql: &str) -> Result<u64>;
+
+    /// Loads data from a Parquet file into a table.
+    ///
+    /// Creates the table if it doesn't exist using the provided schema.
+    /// Returns the number of rows loaded.
     async fn load_parquet(&self, table_name: &str, path: &str, schema: &[ColumnDef])
         -> Result<u64>;
 }

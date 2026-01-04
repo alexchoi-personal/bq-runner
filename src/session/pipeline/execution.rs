@@ -6,7 +6,7 @@ use tracing::{debug, instrument};
 
 use crate::error::{Error, Result};
 use crate::executor::converters::json_to_sql_value_into;
-use crate::executor::ExecutorBackend;
+use crate::executor::{ExecutorBackend, INSERT_BATCH_SIZE};
 use crate::validation::quote_identifier;
 
 use super::types::{PipelineTable, DEFAULT_TABLE_TIMEOUT_SECS};
@@ -78,8 +78,6 @@ async fn execute_table_inner(executor: &dyn ExecutorBackend, table: &PipelineTab
     Ok(())
 }
 
-const INSERT_BATCH_SIZE: usize = 1000;
-
 async fn insert_rows_batched(
     executor: &dyn ExecutorBackend,
     quoted_name: &str,
@@ -90,41 +88,43 @@ async fn insert_rows_batched(
     }
 
     let avg_cols = rows.first().map(|r| r.len()).unwrap_or(4);
-    let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * avg_cols * 16);
+    let prefix = format!("INSERT INTO {} VALUES ", quoted_name);
+    let prefix_len = prefix.len();
+    let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
+    sql_buffer.push_str(&prefix);
+
     let mut rows_in_batch = 0;
     let mut total_rows_inserted = 0usize;
 
     for row in rows {
         if rows_in_batch > 0 {
-            batch_buffer.push_str(", ");
+            sql_buffer.push_str(", ");
         }
-        batch_buffer.push('(');
+        sql_buffer.push('(');
         for (i, val) in row.iter().enumerate() {
             if i > 0 {
-                batch_buffer.push_str(", ");
+                sql_buffer.push_str(", ");
             }
-            json_to_sql_value_into(val, &mut batch_buffer);
+            json_to_sql_value_into(val, &mut sql_buffer);
         }
-        batch_buffer.push(')');
+        sql_buffer.push(')');
         rows_in_batch += 1;
 
         if rows_in_batch >= INSERT_BATCH_SIZE {
-            let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
-            executor.execute_statement(&insert_sql).await.map_err(|e| {
+            executor.execute_statement(&sql_buffer).await.map_err(|e| {
                 Error::Executor(format!(
                     "Batch insert failed after {} rows successfully inserted: {}",
                     total_rows_inserted, e
                 ))
             })?;
             total_rows_inserted += rows_in_batch;
-            batch_buffer.clear();
+            sql_buffer.truncate(prefix_len);
             rows_in_batch = 0;
         }
     }
 
     if rows_in_batch > 0 {
-        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
-        executor.execute_statement(&insert_sql).await.map_err(|e| {
+        executor.execute_statement(&sql_buffer).await.map_err(|e| {
             Error::Executor(format!(
                 "Batch insert failed after {} rows successfully inserted: {}",
                 total_rows_inserted, e
@@ -150,35 +150,38 @@ async fn insert_source_rows_batched(
         .and_then(|r| r.as_array())
         .map(|a| a.len())
         .unwrap_or(4);
-    let mut batch_buffer = String::with_capacity(INSERT_BATCH_SIZE * avg_cols * 16);
+    let prefix = format!("INSERT INTO {} VALUES ", quoted_name);
+    let prefix_len = prefix.len();
+    let mut sql_buffer = String::with_capacity(prefix_len + INSERT_BATCH_SIZE * avg_cols * 16);
+    sql_buffer.push_str(&prefix);
+
     let mut rows_in_batch = 0;
     let mut total_rows_inserted = 0usize;
 
     for (idx, row) in rows.iter().enumerate() {
         if let Value::Array(arr) = row {
             if rows_in_batch > 0 {
-                batch_buffer.push_str(", ");
+                sql_buffer.push_str(", ");
             }
-            batch_buffer.push('(');
+            sql_buffer.push('(');
             for (i, val) in arr.iter().enumerate() {
                 if i > 0 {
-                    batch_buffer.push_str(", ");
+                    sql_buffer.push_str(", ");
                 }
-                json_to_sql_value_into(val, &mut batch_buffer);
+                json_to_sql_value_into(val, &mut sql_buffer);
             }
-            batch_buffer.push(')');
+            sql_buffer.push(')');
             rows_in_batch += 1;
 
             if rows_in_batch >= INSERT_BATCH_SIZE {
-                let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
-                executor.execute_statement(&insert_sql).await.map_err(|e| {
+                executor.execute_statement(&sql_buffer).await.map_err(|e| {
                     Error::Executor(format!(
                         "Batch insert failed for table '{}' after {} rows successfully inserted: {}",
                         table_name, total_rows_inserted, e
                     ))
                 })?;
                 total_rows_inserted += rows_in_batch;
-                batch_buffer.clear();
+                sql_buffer.truncate(prefix_len);
                 rows_in_batch = 0;
             }
         } else {
@@ -199,8 +202,7 @@ async fn insert_source_rows_batched(
     }
 
     if rows_in_batch > 0 {
-        let insert_sql = format!("INSERT INTO {} VALUES {}", quoted_name, batch_buffer);
-        executor.execute_statement(&insert_sql).await.map_err(|e| {
+        executor.execute_statement(&sql_buffer).await.map_err(|e| {
             Error::Executor(format!(
                 "Batch insert failed for table '{}' after {} rows successfully inserted: {}",
                 table_name, total_rows_inserted, e
