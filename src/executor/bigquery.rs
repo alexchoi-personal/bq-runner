@@ -59,9 +59,19 @@ impl BigQueryExecutor {
             .map_err(|e| Error::Executor(format!("Failed to create BigQuery client: {}", e)))?;
 
         let dataset_id = std::env::var("BQ_DATASET").ok();
-        let query_timeout_ms = std::env::var("BQ_QUERY_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let query_timeout_ms =
+            std::env::var("BQ_QUERY_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| match s.parse() {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        tracing::warn!(
+                            value = %s,
+                            "Invalid BQ_QUERY_TIMEOUT_MS value, ignoring"
+                        );
+                        None
+                    }
+                });
 
         Ok(Self {
             client,

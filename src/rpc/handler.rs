@@ -47,8 +47,8 @@ pub async fn handle_websocket(socket: WebSocket, methods: Arc<RpcMethods>) {
             }
         };
 
-        if sender.send(Message::Text(response_text)).await.is_err() {
-            error!("Failed to send response");
+        if let Err(e) = sender.send(Message::Text(response_text)).await {
+            error!(error = %e, "Failed to send response");
             break;
         }
     }

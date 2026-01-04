@@ -55,7 +55,7 @@ impl Pipeline {
         for def in defs {
             let is_source = def.sql.is_none();
             let name = def.name;
-            new_names.push(name.clone());
+            let name_upper = name.to_uppercase();
             let table = PipelineTable {
                 name: name.clone(),
                 sql: def.sql,
@@ -65,9 +65,11 @@ impl Pipeline {
                 is_source,
             };
             self.table_name_lookup
-                .insert(name.to_uppercase(), name.clone());
-            self.table_status.insert(name.clone(), TableStatus::Pending);
-            temp_tables.insert(name, table);
+                .insert(name_upper, table.name.clone());
+            self.table_status
+                .insert(table.name.clone(), TableStatus::Pending);
+            new_names.push(name);
+            temp_tables.insert(table.name.clone(), table);
         }
 
         for name in &new_names {
@@ -274,12 +276,13 @@ impl Pipeline {
 
             processed += 1;
 
+            let name_for_state = name.clone();
             {
                 let mut s = state.lock();
                 s.finish_in_flight(&name);
                 match &outcome {
-                    Ok(()) => s.mark_completed(name.clone()),
-                    Err(_) => s.mark_blocked(name.clone()),
+                    Ok(()) => s.mark_completed(name_for_state),
+                    Err(_) => s.mark_blocked(name_for_state),
                 }
             }
 
