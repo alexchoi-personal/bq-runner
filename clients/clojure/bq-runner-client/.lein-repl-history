@@ -1,0 +1,18 @@
+(require '[aleph.http :as http])
+(require '[manifold.stream :as s])
+(require '[cheshire.core :as json])
+(println "Attempting to connect...")
+(try
+  (let [conn @(http/websocket-client "ws://127.0.0.1:3000")]
+    (println "Connected!")
+    (println "Sending ping...")
+    @(s/put! conn (json/generate-string {:jsonrpc "2.0" :method "bq.ping" :params {} :id 1}))
+    (println "Waiting for response...")
+    (let [response @(s/take! conn)]
+      (println "Response:" response))
+    (s/close! conn)
+    (println "Done"))
+  (catch Exception e
+    (println "Error:" (.getMessage e))
+    (println "Cause:" (when-let [c (.getCause e)] (.getMessage c)))))
+(System/exit 0)
