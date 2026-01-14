@@ -8,7 +8,8 @@ pub use core::*;
 pub use query::{
     ColumnDef, CreateTableParams, CreateTableResult, DescribeTableParams, DescribeTableResult,
     InsertParams, InsertResult, ListTablesResult, LoadParquetParams, LoadParquetResult,
-    QueryParams, TableInfo,
+    QueryArrowParams, QueryArrowResult, QueryParams, ReleaseArrowResultParams,
+    ReleaseArrowResultResult, TableInfo,
 };
 pub use session::*;
 pub use table::*;

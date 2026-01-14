@@ -83,6 +83,36 @@ pub struct DescribeTableResult {
     pub row_count: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct QueryArrowParams {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub sql: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueryArrowResult {
+    #[serde(rename = "shmPath")]
+    pub shm_path: String,
+    #[serde(rename = "dataSize")]
+    pub data_size: usize,
+    #[serde(rename = "rowCount")]
+    pub row_count: usize,
+    #[serde(rename = "schemaJson")]
+    pub schema_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseArrowResultParams {
+    #[serde(rename = "shmPath")]
+    pub shm_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReleaseArrowResultResult {
+    pub success: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

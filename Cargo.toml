@@ -11,7 +11,7 @@ categories = ["database", "development-tools::testing"]
 [dependencies]
 tokio = { version = "1", features = ["full", "sync"] }
 axum = { version = "0.7", features = ["ws"] }
-yachtsql = { git = "https://github.com/alexchoi-personal/yachtSQL", branch = "v0.1.0" }
+yachtsql = { git = "https://github.com/alexchoi-personal/yachtSQL", branch = "v2026-01-14" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -41,6 +41,7 @@ tower_governor = "0.4"
 governor = "0.8"
 subtle = "2.6.1"
 ahash = "0.8"
+memmap2 = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -82,3 +83,11 @@ harness = false
 [[bench]]
 name = "session_management"
 harness = false
+
+[[bench]]
+name = "arrow_ipc"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1

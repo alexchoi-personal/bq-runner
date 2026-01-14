@@ -1,3 +1,4 @@
+pub(crate) mod arrow_ipc;
 mod bigquery;
 pub mod converters;
 pub(crate) mod sql_builder;

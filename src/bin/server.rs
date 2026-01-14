@@ -18,7 +18,9 @@ use tokio::net::UnixListener;
 use tokio::signal;
 use tokio::sync::watch;
 use tower::ServiceBuilder;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::PeerIpKeyExtractor, GovernorLayer,
+};
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::EnvFilter;
 
@@ -622,6 +624,7 @@ async fn run_http_server(
         GovernorConfigBuilder::default()
             .per_second(rate_limit_per_second)
             .burst_size(rate_limit_burst)
+            .key_extractor(PeerIpKeyExtractor)
             .finish()
             .ok_or_else(|| anyhow::anyhow!("Failed to build governor config"))?,
     );
@@ -654,9 +657,12 @@ async fn run_http_server(
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Graceful shutdown on SIGTERM/SIGINT
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("Server shutdown complete");
     Ok(())

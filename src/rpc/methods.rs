@@ -48,8 +48,9 @@ use super::types::{
     GetDefaultProjectParams, GetDefaultProjectResult, GetProjectsParams, GetProjectsResult,
     GetTablesInDatasetParams, GetTablesInDatasetResult, HealthCheck, HealthResult, InsertParams,
     InsertResult, ListTablesResult, LivenessResult, LoadDirectoryParams, LoadDirectoryResult,
-    LoadParquetParams, LoadParquetResult, LoadedTableInfo, PingResult, QueryParams,
-    ReadinessResult, SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
+    LoadParquetParams, LoadParquetResult, LoadedTableInfo, PingResult, QueryArrowParams,
+    QueryArrowResult, QueryParams, ReadinessResult, ReleaseArrowResultParams,
+    ReleaseArrowResultResult, SetDefaultProjectParams, SetDefaultProjectResult, TableInfo,
 };
 
 impl_has_session_id!(
@@ -141,6 +142,8 @@ impl RpcMethods {
             "bq.loadSqlDirectory" => self.load_sql_directory(params).await,
             "bq.loadParquetDirectory" => self.load_parquet_directory(params).await,
             "bq.loadDagFromDirectory" => self.load_dag_from_directory(params).await,
+            "bq.queryArrow" => self.query_arrow(params).await,
+            "bq.releaseArrowResult" => self.release_arrow_result(params).await,
             _ => Err(Error::InvalidRequest(format!("Unknown method: {}", method))),
         }
     }
@@ -618,6 +621,49 @@ impl RpcMethods {
             computed_tables,
             dag_info,
         }))
+    }
+
+    async fn query_arrow(&self, params: Value) -> Result<Value> {
+        use crate::executor::arrow_ipc::ArrowSharedMemoryWriter;
+
+        let p: QueryArrowParams = serde_json::from_value(params)?;
+        let session_id = parse_uuid(&p.session_id)?;
+
+        if p.sql.len() > self.rpc_config.max_sql_length {
+            return Err(Error::InvalidRequest(format!(
+                "SQL query exceeds maximum length of {} bytes",
+                self.rpc_config.max_sql_length
+            )));
+        }
+
+        validate_sql_for_query(&p.sql)?;
+
+        let result = self
+            .session_manager
+            .execute_query(session_id, &p.sql)
+            .await?;
+
+        let handle = ArrowSharedMemoryWriter::write_query_result(&result, &session_id)?;
+
+        self.session_manager
+            .register_arrow_handle(session_id, handle.path.clone())?;
+
+        Ok(json!(QueryArrowResult {
+            shm_path: handle.path,
+            data_size: handle.size,
+            row_count: handle.row_count,
+            schema_json: handle.schema_json,
+        }))
+    }
+
+    async fn release_arrow_result(&self, params: Value) -> Result<Value> {
+        use crate::executor::arrow_ipc::ArrowSharedMemoryWriter;
+
+        let p: ReleaseArrowResultParams = serde_json::from_value(params)?;
+
+        ArrowSharedMemoryWriter::release(&p.shm_path)?;
+
+        Ok(json!(ReleaseArrowResultResult { success: true }))
     }
 }
 

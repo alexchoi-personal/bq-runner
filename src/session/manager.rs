@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::{OnceCell, Semaphore};
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -74,6 +74,7 @@ struct Session {
     pipeline: Arc<Pipeline>,
     last_accessed_nanos: AtomicU64,
     created_at: Instant,
+    arrow_handles: Mutex<HashSet<String>>,
 }
 
 impl Session {
@@ -87,6 +88,7 @@ impl Session {
             pipeline: Arc::new(Pipeline::with_config(max_concurrency, table_timeout_secs)),
             last_accessed_nanos: AtomicU64::new(0),
             created_at: Instant::now(),
+            arrow_handles: Mutex::new(HashSet::new()),
         }
     }
 
@@ -157,6 +159,8 @@ impl SessionManager {
     }
 
     pub fn cleanup_expired_sessions(&self) -> usize {
+        use crate::executor::arrow_ipc::ArrowSharedMemoryWriter;
+
         let timeout = Duration::from_secs(self.session_config.session_timeout_secs);
         let now = Instant::now();
 
@@ -166,6 +170,12 @@ impl SessionManager {
         sessions.retain(|id, session| {
             let expired = now.duration_since(session.last_accessed()) > timeout;
             if expired {
+                let handles = session.arrow_handles.lock();
+                for path in handles.iter() {
+                    if let Err(e) = ArrowSharedMemoryWriter::release(path) {
+                        debug!(path = %path, error = %e, "Failed to cleanup Arrow handle");
+                    }
+                }
                 debug!(session_id = %id, "Session expired and removed");
             }
             !expired
@@ -257,11 +267,21 @@ impl SessionManager {
     }
 
     pub fn destroy_session(&self, session_id: Uuid) -> Result<()> {
+        use crate::executor::arrow_ipc::ArrowSharedMemoryWriter;
+
         let session_count = {
             let mut sessions = self.sessions.write();
-            sessions
+            let session = sessions
                 .remove(&session_id)
                 .ok_or(Error::SessionNotFound(session_id))?;
+
+            let handles = session.arrow_handles.lock();
+            for path in handles.iter() {
+                if let Err(e) = ArrowSharedMemoryWriter::release(path) {
+                    debug!(path = %path, error = %e, "Failed to cleanup Arrow handle on session destroy");
+                }
+            }
+
             sessions.len()
         };
 
@@ -269,6 +289,20 @@ impl SessionManager {
         set_active_sessions(session_count);
 
         Ok(())
+    }
+
+    pub fn register_arrow_handle(&self, session_id: Uuid, path: String) -> Result<()> {
+        self.with_session(session_id, |session| {
+            session.arrow_handles.lock().insert(path);
+            Ok(())
+        })
+    }
+
+    pub fn unregister_arrow_handle(&self, session_id: Uuid, path: &str) -> Result<()> {
+        self.with_session(session_id, |session| {
+            session.arrow_handles.lock().remove(path);
+            Ok(())
+        })
     }
 
     pub async fn execute_query(&self, session_id: Uuid, sql: &str) -> Result<QueryResult> {
